@@ -5,6 +5,9 @@
 /run.sh
 /feidex
 /feidex-bin
+/bin/
 /tmp/
 /.tmp-*/
 *.log
+/.DS_Store
+/nohup.out

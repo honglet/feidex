@@ -79,6 +79,7 @@ func runServe(args []string) int {
 	logcontrol.Set(logLevel)
 	logger := slog.New(logcontrol.NewHandler(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logcontrol.LevelVar()})))
 	slog.SetDefault(logger)
+	fmt.Fprintf(os.Stderr, "feidex: service starting config=%s data_dir=%s log_level=%s\n", *configPath, cfg.DataDir, cfg.Log.Level)
 	slog.Info("service starting", "config_path", *configPath, "data_dir", cfg.DataDir, "log_level", cfg.Log.Level)
 
 	svc, err := newApp(cfg, *configPath)
@@ -94,8 +95,10 @@ func runServe(args []string) int {
 		fmt.Fprintf(os.Stderr, "start service: %v\n", err)
 		return 1
 	}
+	fmt.Fprintln(os.Stderr, "feidex: service started")
 	slog.Info("service started")
 	<-ctx.Done()
+	fmt.Fprintln(os.Stderr, "feidex: service stopping")
 	slog.Info("service stopping")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), config.DefaultShutdownTimeout)
 	defer shutdownCancel()
@@ -103,6 +106,7 @@ func runServe(args []string) int {
 		fmt.Fprintf(os.Stderr, "stop service: %v\n", err)
 		return 1
 	}
+	fmt.Fprintln(os.Stderr, "feidex: service stopped")
 	slog.Info("service stopped")
 	return 0
 }
