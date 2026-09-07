@@ -101,6 +101,19 @@ go build -o bin/feishu_card_demo ./cmd/feishu_card_demo
 go test ./...
 ```
 
+On macOS, a Feidex binary launched by `launchd` may need TCC access to removable
+volumes. A plain Go build has a changing ad-hoc CDHash, so it cannot retain that
+authorization across rebuilds. For that deployment, use a stable certificate:
+
+```bash
+FEIDEX_CODESIGN_IDENTITY="Feidex Local Code Signing" \
+  ./scripts/build_macos_signed.sh
+```
+
+Keep the binary in `bin/`; signing is an identity fix, not a reason to copy the
+binary or config outside the checkout. See `README.MAC.md` for the one-time TCC
+approval and unattended MDM/PPPC options.
+
 ## Go Cache Convention
 
 Use the system default Go cache when it is writable. If the environment is sandboxed or the default cache is read-only, use the Feidex-standard tmp locations instead of ad hoc names:

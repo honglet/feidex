@@ -17,6 +17,15 @@ import (
 	"feidex/internal/state"
 )
 
+func effectiveCodexConfig(a App) *config.Config {
+	if provider, ok := a.(interface{ EffectiveCodexConfig() *config.Config }); ok {
+		if cfg := provider.EffectiveCodexConfig(); cfg != nil {
+			return cfg
+		}
+	}
+	return a.Config()
+}
+
 // EnsureWorkspaceThreadBinding dispatches to the Claude or Codex
 // implementation based on the configured backend.
 func (s *ThreadService) EnsureWorkspaceThreadBinding(sessionKey string, sess *state.Session, ws *config.Workspace) (*ThreadBinding, error) {
@@ -179,7 +188,7 @@ func (s *ThreadService) ResumeCodexWorkspaceThread(sessionKey string, sess *stat
 	if threadID == "" {
 		return nil, fmt.Errorf("missing thread id")
 	}
-	effectiveModel := modelconfig.ConfiguredGlobalModel(s.App.Config())
+	effectiveModel := modelconfig.ConfiguredGlobalModel(effectiveCodexConfig(s.App))
 	params := codexrpc.ThreadResumeParams{
 		ThreadID:               threadID,
 		PersistExtendedHistory: true,
@@ -258,7 +267,7 @@ func (s *ThreadService) StartCodexWorkspaceThread(sessionKey string, sess *state
 	if err != nil {
 		return nil, err
 	}
-	effectiveModel := modelconfig.ConfiguredGlobalModel(s.App.Config())
+	effectiveModel := modelconfig.ConfiguredGlobalModel(effectiveCodexConfig(s.App))
 	threadParams := s.BuildThreadStartParams(ws, sess, effectiveModel)
 	var result codexrpc.ThreadStartResult
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

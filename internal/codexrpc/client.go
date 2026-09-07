@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +20,8 @@ import (
 
 	"feidex/internal/codexcli"
 	"feidex/internal/config"
+
+	"github.com/BurntSushi/toml"
 )
 
 const (
@@ -330,13 +334,18 @@ func (c *Client) readLoop() {
 }
 
 func (c *Client) startStdio() error {
-	args := []string{"app-server"}
+	profileArgs, err := codexProfileConfigArgs(c.cfg.Home, c.cfg.Profile)
+	if err != nil {
+		return err
+	}
+	args := append([]string{"app-server"}, profileArgs...)
 	if mcpArgs, mcpEnv := c.mcpLaunchArgs(); len(mcpArgs) > 0 || len(mcpEnv) > 0 {
 		args = append(args, mcpArgs...)
 		c.cmd = exec.Command(c.cfg.Command, args...)
-		c.cmd.Env = append(os.Environ(), mcpEnv...)
+		c.cmd.Env = codexProcessEnv(c.cfg.Home, mcpEnv)
 	} else {
 		c.cmd = exec.Command(c.cfg.Command, args...)
+		c.cmd.Env = codexProcessEnv(c.cfg.Home, nil)
 	}
 	if dir := strings.TrimSpace(c.cfg.AppServerDir); dir != "" {
 		c.cmd.Dir = dir
@@ -359,11 +368,167 @@ func (c *Client) startStdio() error {
 		"client_id", c.id,
 		"pid", c.pid(),
 		"command", c.cfg.Command,
+		"profile", strings.TrimSpace(c.cfg.Profile),
+		"codex_home", strings.TrimSpace(c.cfg.Home),
 		"cwd", strings.TrimSpace(c.cmd.Dir),
 	)
 	go c.waitLoop()
 	go c.readLoop()
 	return nil
+}
+
+// Codex currently limits --profile to interactive/runtime commands and rejects
+// it for app-server. Reproduce the documented profile layering semantics by
+// loading $CODEX_HOME/<name>.config.toml and forwarding its leaves as -c
+// overrides to this app-server process.
+func codexProfileConfigArgs(configuredHome, profile string) ([]string, error) {
+	profile = strings.TrimSpace(profile)
+	if profile == "" {
+		return nil, nil
+	}
+	if profile == "." || profile == ".." || strings.ContainsAny(profile, `/\\`) {
+		return nil, fmt.Errorf("invalid Codex profile name %q", profile)
+	}
+	home := strings.TrimSpace(configuredHome)
+	if home == "" {
+		home = strings.TrimSpace(os.Getenv("CODEX_HOME"))
+	}
+	if home == "" {
+		userHome, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("resolve Codex home for profile %q: %w", profile, err)
+		}
+		home = filepath.Join(userHome, ".codex")
+	}
+	path := filepath.Join(home, profile+".config.toml")
+	values := map[string]any{}
+	if _, err := toml.DecodeFile(path, &values); err != nil {
+		return nil, fmt.Errorf("load Codex profile %q from %s: %w", profile, path, err)
+	}
+	overrides := make([]string, 0, len(values))
+	if err := flattenCodexProfileConfig(nil, values, &overrides); err != nil {
+		return nil, fmt.Errorf("encode Codex profile %q from %s: %w", profile, path, err)
+	}
+	args := make([]string, 0, len(overrides)*2)
+	for _, override := range overrides {
+		args = append(args, "-c", override)
+	}
+	return args, nil
+}
+
+func flattenCodexProfileConfig(prefix []string, values map[string]any, overrides *[]string) error {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		path := append(append([]string(nil), prefix...), key)
+		if nested, ok := values[key].(map[string]any); ok {
+			if err := flattenCodexProfileConfig(path, nested, overrides); err != nil {
+				return err
+			}
+			continue
+		}
+		encoded, err := encodeCodexConfigValue(values[key])
+		if err != nil {
+			return fmt.Errorf("%s: %w", strings.Join(path, "."), err)
+		}
+		segments := make([]string, len(path))
+		for i, segment := range path {
+			segments[i] = encodeCodexConfigKey(segment)
+		}
+		*overrides = append(*overrides, strings.Join(segments, ".")+"="+encoded)
+	}
+	return nil
+}
+
+func encodeCodexConfigKey(key string) string {
+	if key != "" && strings.IndexFunc(key, func(r rune) bool {
+		return !(r == '-' || r == '_' || r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z')
+	}) < 0 {
+		return key
+	}
+	encoded, _ := json.Marshal(key)
+	return string(encoded)
+}
+
+func encodeCodexConfigValue(value any) (string, error) {
+	if values, ok := value.(map[string]any); ok {
+		keys := make([]string, 0, len(values))
+		for key := range values {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, key := range keys {
+			encoded, err := encodeCodexConfigValue(values[key])
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, encodeCodexConfigKey(key)+" = "+encoded)
+		}
+		return "{ " + strings.Join(parts, ", ") + " }", nil
+	}
+	if values, ok := value.([]map[string]any); ok {
+		parts := make([]string, 0, len(values))
+		for _, item := range values {
+			encoded, err := encodeCodexConfigValue(item)
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, encoded)
+		}
+		return "[" + strings.Join(parts, ", ") + "]", nil
+	}
+	if values, ok := value.([]any); ok {
+		parts := make([]string, 0, len(values))
+		for _, item := range values {
+			encoded, err := encodeCodexConfigValue(item)
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, encoded)
+		}
+		return "[" + strings.Join(parts, ", ") + "]", nil
+	}
+	encoded, err := toml.Marshal(map[string]any{"value": value})
+	if err != nil {
+		return "", err
+	}
+	text := strings.TrimSpace(string(encoded))
+	const prefix = "value = "
+	if !strings.HasPrefix(text, prefix) {
+		return "", fmt.Errorf("unsupported TOML value %T", value)
+	}
+	return strings.TrimSpace(strings.TrimPrefix(text, prefix)), nil
+}
+
+func codexProcessEnv(home string, additions []string) []string {
+	env := os.Environ()
+	if home = strings.TrimSpace(home); home != "" {
+		env = replaceEnvValue(env, "CODEX_HOME", home)
+	}
+	for _, addition := range additions {
+		key, _, ok := strings.Cut(addition, "=")
+		if !ok || strings.TrimSpace(key) == "" {
+			continue
+		}
+		env = replaceEnvValue(env, key, addition[len(key)+1:])
+	}
+	return env
+}
+
+func replaceEnvValue(env []string, key, value string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out, prefix+value)
 }
 
 func (c *Client) mcpLaunchArgs() ([]string, []string) {

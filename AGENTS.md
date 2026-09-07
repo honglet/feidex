@@ -23,3 +23,16 @@ Read these documents before making non-trivial changes:
 - When adjusting menus, preserve the current menu structure and item order unless the user explicitly asks to change them.
 - Treat protocol correctness as a product requirement, not optional cleanup.
 - If there is tension between local convenience and the documented contracts, follow the documented contracts.
+
+## macOS LaunchAgent Builds
+
+- When building the Feidex binary for the macOS LaunchAgent, do not use plain `go build`; it creates an ad-hoc signature and causes macOS TCC approval for external volumes to be requested again after each rebuild.
+- Use the repository signing script and the stable identity configured for this machine:
+
+  ```bash
+  FEIDEX_CODESIGN_IDENTITY="Feidex Local Code Signing" \
+    ./scripts/build_macos_signed.sh bin/feidex
+  ```
+
+- Verify the result with `codesign -dvvv bin/feidex`. It must show a certificate `Authority=` entry, not `Signature=adhoc`.
+- If the signing identity is unavailable, stop and report that prerequisite instead of falling back to an unsigned or ad-hoc deployment build. Plain `go build` is acceptable only for non-deployment development artifacts.

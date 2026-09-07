@@ -54,6 +54,83 @@ func TestSetupFeishuAutoModes(t *testing.T) {
 	}
 }
 
+func TestSetupFeishuBindSupportsLarkPlatform(t *testing.T) {
+	var hosts []string
+	withDefaultTransport(t, setupRoundTripper(func(req *http.Request) (*http.Response, error) {
+		hosts = append(hosts, req.URL.Host)
+		return testHTTPResponse(`{"code":0,"tenant_access_token":"token"}`), nil
+	}))
+
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := SetupFeishu(FeishuSetupBind, FeishuSetupOptions{
+		ConfigPath: cfgPath,
+		AppPair:    "bind-id:bind-secret",
+		Platform:   LarkPlatform,
+	}); err != nil {
+		t.Fatalf("SetupFeishu(lark bind) error = %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load(lark bind) error = %v", err)
+	}
+	if cfg.Feishu.Platform != LarkPlatform {
+		t.Fatalf("saved platform = %q, want lark", cfg.Feishu.Platform)
+	}
+	if len(hosts) != 1 || hosts[0] != "open.larksuite.com" {
+		t.Fatalf("validation hosts = %+v, want open.larksuite.com", hosts)
+	}
+}
+
+func TestSetupFeishuNewRejectsLarkPlatform(t *testing.T) {
+	err := SetupFeishu(FeishuSetupNew, FeishuSetupOptions{
+		ConfigPath: filepath.Join(t.TempDir(), "config.toml"),
+		Platform:   LarkPlatform,
+	})
+	if err == nil || !strings.Contains(err.Error(), "supported only for Feishu") {
+		t.Fatalf("SetupFeishu(new lark) error = %v, want unsupported registration", err)
+	}
+}
+
+func TestSetupFeishuPreservesExistingPlatformWhenOmitted(t *testing.T) {
+	var host string
+	withDefaultTransport(t, setupRoundTripper(func(req *http.Request) (*http.Response, error) {
+		host = req.URL.Host
+		return testHTTPResponse(`{"code":0,"tenant_access_token":"token"}`), nil
+	}))
+
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	cfg := Default()
+	cfg.Frontends = []FrontendConfig{{
+		ID: "lark-main",
+		FeishuConfig: FeishuConfig{
+			Platform:  LarkPlatform,
+			AppID:     "old-id",
+			AppSecret: "old-secret",
+		},
+	}}
+	if err := Save(cfgPath, cfg); err != nil {
+		t.Fatalf("Save(config) error = %v", err)
+	}
+
+	if err := SetupFeishu(FeishuSetupBind, FeishuSetupOptions{
+		ConfigPath: cfgPath,
+		FrontendID: "lark-main",
+		AppPair:    "new-id:new-secret",
+	}); err != nil {
+		t.Fatalf("SetupFeishu(preserve platform) error = %v", err)
+	}
+	loaded, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load(config) error = %v", err)
+	}
+	if loaded.Frontends[0].Platform != LarkPlatform {
+		t.Fatalf("frontend platform = %q, want lark", loaded.Frontends[0].Platform)
+	}
+	if host != "open.larksuite.com" {
+		t.Fatalf("validation host = %q, want open.larksuite.com", host)
+	}
+}
+
 func TestRunRegistrationFlowTimeoutAndExpiry(t *testing.T) {
 	withDefaultTransport(t, setupRoundTripper(func(req *http.Request) (*http.Response, error) {
 		body, _ := io.ReadAll(req.Body)

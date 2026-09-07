@@ -30,6 +30,8 @@ type App struct {
 	frontendConfigIndex    int
 	configMu               sync.RWMutex
 	backend                string
+	codexProfile           string
+	codexHome              string
 	codex                  CodexClient
 	claude                 ClaudeCore
 	feishu                 FeishuClient
@@ -103,6 +105,8 @@ func newFrontendApp(cfg *config.Config, cfgPath string, store *state.Store, fron
 		frontendID:          strings.TrimSpace(frontend.ID),
 		frontendConfigIndex: frontend.ConfigIndex,
 		backend:             backend,
+		codexProfile:        strings.TrimSpace(frontend.CodexProfile),
+		codexHome:           strings.TrimSpace(frontend.CodexHome),
 		feishu:              FeishuClient,
 		started:             time.Now(),
 		deduper:             newInboundDeduper(),
@@ -145,6 +149,7 @@ func (a *App) Start(ctx context.Context) error {
 		_ = stopMCPService(a, context.Background())
 		return err
 	}
+	startAttachmentCleanup(a)
 	newRuntimeMaintenanceService(a).StartDriveArtifactGCLoop(ctx)
 	newRuntimeMaintenanceService(a).StartUpgradeCheckLoop(ctx)
 	go sendStartupReadyNotifications(a)

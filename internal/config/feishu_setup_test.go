@@ -116,14 +116,14 @@ func TestValidateFeishuCredentialsAndRegistrationCall(t *testing.T) {
 		}
 		return testHTTPResponse(`{"ok":true}`), nil
 	}))
-	if err := validateFeishuCredentials("app", "secret"); err != nil {
+	if err := validateFeishuCredentials("app", "secret", FeishuPlatform); err != nil {
 		t.Fatalf("validateFeishuCredentials(success) error = %v", err)
 	}
 
 	withDefaultTransport(t, setupRoundTripper(func(req *http.Request) (*http.Response, error) {
 		return testHTTPResponse(`{"code":999,"msg":"bad creds"}`), nil
 	}))
-	if err := validateFeishuCredentials("app", "secret"); err == nil {
+	if err := validateFeishuCredentials("app", "secret", FeishuPlatform); err == nil {
 		t.Fatal("expected invalid credentials to fail")
 	}
 

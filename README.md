@@ -209,6 +209,7 @@ data_dir = ".feidex-data"
 level = "info"
 
 [feishu]
+# platform = "feishu" # or "lark"
 app_id = "cli_xxx"
 app_secret = "sec_xxx"
 allow_from = []
@@ -238,12 +239,14 @@ service_name = "feidex"
 # 可选：多前端配置（替换单一 [feishu]）
 # [[frontend]]
 # id = "codex-main"
+# platform = "feishu"
 # backend = "codex"
 # app_id = "cli_xxx"
 # app_secret = "sec_xxx"
 #
 # [[frontend]]
 # id = "claude-main"
+# platform = "lark"
 # backend = "claude"
 # app_id = "cli_yyy"
 # app_secret = "sec_yyy"
@@ -271,12 +274,12 @@ sandbox_mode = "workspace-write"
 
 ## 飞书接入
 
-Feidex 提供了三种飞书配置方式：
+Feidex 提供了三种飞书/Lark 配置方式：
 
 ```bash
-feidex feishu setup [--config config.toml] [--frontend-id id] [--backend codex|claude]
+feidex feishu setup [--config config.toml] [--frontend-id id] [--backend codex|claude] [--platform feishu|lark]
 feidex feishu new   [--config config.toml] [--frontend-id id] [--backend codex|claude]
-feidex feishu bind  --app app_id:app_secret [--config config.toml] [--frontend-id id]
+feidex feishu bind  --app app_id:app_secret [--config config.toml] [--frontend-id id] [--platform feishu|lark]
 ```
 
 说明：
@@ -288,7 +291,12 @@ feidex feishu bind  --app app_id:app_secret [--config config.toml] [--frontend-i
 - `feishu new`
   - 强制新建
 - `feishu bind`
-  - 绑定已有飞书应用
+  - 绑定已有飞书或 Lark 应用
+- `--platform`
+  - 选择开放平台，默认 `feishu`
+  - `feishu` 使用 `https://open.feishu.cn`
+  - `lark` 使用 `https://open.larksuite.com`
+  - 当前二维码新建应用流程只支持飞书；Lark 请先在 Lark Open Platform 创建应用，再用 `feishu bind --platform lark`
 - `--frontend-id`
   - 直接创建或更新指定 `[[frontend]]`
   - 如果当前配置还在用顶层 `[feishu]`，第一次增加命名 frontend 时会自动迁移成 `[[frontend]]`
@@ -299,7 +307,7 @@ feidex feishu bind  --app app_id:app_secret [--config config.toml] [--frontend-i
 
 ```bash
 feidex feishu setup --config config.toml --frontend-id codex-main --backend codex
-feidex feishu setup --config config.toml --frontend-id claude-main --backend claude
+feidex feishu bind --config config.toml --frontend-id claude-main --backend claude --platform lark --app app_id:app_secret
 ```
 
 对应实现见：
@@ -323,7 +331,9 @@ Feidex 会把这些状态写进去：
 ### `[feishu]`
 
 - `app_id` / `app_secret`
-  - 飞书应用凭据
+  - 飞书或 Lark 应用凭据
+- `platform`
+  - 可选，`feishu` 或 `lark`，默认 `feishu`
 - `allow_from`
   - 允许的用户列表；空表示不限制
 - `debug_allow_from`
@@ -390,6 +400,12 @@ Claude Code 后端配置：
 - `backend`
   - 后端选择：`"codex"` 或 `"claude"`
   - 留空则在启动时弹出交互式选择卡片
+- `codex_profile`
+  - 仅对 Codex frontend 生效；加载 `$CODEX_HOME/<name>.config.toml` 并将其配置叠加到该 frontend 的 app-server 进程
+  - 当前 Codex CLI 不允许 app-server 直接使用 `--profile`，因此 Feidex 将 profile 中的配置转换为等价的 `-c` 启动覆盖项
+- `codex_home`
+  - 仅对 Codex frontend 生效；为该 frontend 设置独立的 `CODEX_HOME`
+  - 可用于隔离 Codex 配置、认证、历史、skills 和 MCP 状态；相对路径按配置文件目录解析
 - `app_id` / `app_secret`
   - 该前端的飞书应用凭据
 - `allow_from` / `debug_allow_from` / `group_at_only` 等

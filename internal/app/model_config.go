@@ -2,6 +2,9 @@ package app
 
 import (
 	"context"
+	"fmt"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"feidex/internal/app/modelconfig"
@@ -19,9 +22,13 @@ type modelConfigService struct {
 func newModelConfigService(app *App) modelConfigService {
 	return modelConfigService{
 		inner: modelconfig.ModelConfigService{
-			GetConfig:   func() *config.Config { return app.cfg },
-			GetCfgPath:  func() string { return app.cfgPath },
-			GetConfigMu: func() *sync.RWMutex { return &app.configMu },
+			GetConfig:      func() *config.Config { return app.cfg },
+			GetCodexConfig: func() *config.Config { return app.EffectiveCodexConfig() },
+			GetCfgPath:     func() string { return app.cfgPath },
+			GetConfigMu:    func() *sync.RWMutex { return &app.configMu },
+			UpdateCodexConfig: func(mutate func(*config.CodexConfig), result codexrpc.ModelListResult) error {
+				return updateFrontendCodexConfig(app, mutate, result)
+			},
 			ReplyText: func(ctx context.Context, msgID string, text string, replyInThread bool) error {
 				return app.feishu.ReplyText(ctx, msgID, text, replyInThread)
 			},
@@ -81,6 +88,47 @@ func newModelConfigService(app *App) modelConfigService {
 			},
 		},
 	}
+}
+
+func updateFrontendCodexConfig(app *App, mutate func(*config.CodexConfig), result codexrpc.ModelListResult) error {
+	if app == nil || app.cfg == nil {
+		return fmt.Errorf("nil config")
+	}
+	effective := app.EffectiveCodexConfig()
+	if effective == nil {
+		return fmt.Errorf("nil config")
+	}
+	updated := effective.Codex
+	if mutate != nil {
+		mutate(&updated)
+	}
+	updated.Model = strings.TrimSpace(updated.Model)
+	updated.ReasoningEffort = strings.TrimSpace(updated.ReasoningEffort)
+	updated.PlanModel = strings.TrimSpace(updated.PlanModel)
+	updated.PlanReasoningEffort = strings.TrimSpace(updated.PlanReasoningEffort)
+	selectedModel := modelconfig.FindModelEntry(result, updated.Model)
+	if !modelconfig.ModelSupportsEffort(selectedModel, updated.ReasoningEffort) {
+		updated.ReasoningEffort = ""
+	}
+	selectedPlanModel, _ := modelconfig.EffectivePlanConfiguredModelAndEffort(&config.Config{Codex: updated}, result, nil)
+	if !modelconfig.ModelSupportsEffort(selectedPlanModel, updated.PlanReasoningEffort) {
+		updated.PlanReasoningEffort = ""
+	}
+	if strings.TrimSpace(app.CodexProfile()) == "" {
+		app.configMu.Lock()
+		defer app.configMu.Unlock()
+		app.cfg.Codex = updated
+		if err := app.cfg.Normalize(filepath.Dir(app.cfgPath)); err != nil {
+			return err
+		}
+		return config.Save(app.cfgPath, app.cfg)
+	}
+	return config.UpdateCodexProfile(app.codexHome, app.codexProfile, func(profile *config.CodexConfig) {
+		profile.Model = updated.Model
+		profile.ReasoningEffort = updated.ReasoningEffort
+		profile.PlanModel = updated.PlanModel
+		profile.PlanReasoningEffort = updated.PlanReasoningEffort
+	})
 }
 
 func (s modelConfigService) fetchModelList(ctx context.Context) (codexrpc.ModelListResult, error) {

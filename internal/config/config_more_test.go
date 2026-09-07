@@ -68,6 +68,34 @@ func TestNormalizeFillsDefaultsAndResolvesPaths(t *testing.T) {
 	}
 }
 
+func TestCodexProfileLoadAndUpdatePreservesUnrelatedKeys(t *testing.T) {
+	home := t.TempDir()
+	profilePath := filepath.Join(home, "xiaolongnv.config.toml")
+	if err := os.WriteFile(profilePath, []byte("model = \"gpt-6-astra\"\nmodel_reasoning_effort = \"high\"\ncustom_key = \"keep\"\n"), 0o600); err != nil {
+		t.Fatalf("write profile: %v", err)
+	}
+	profile, err := LoadCodexProfile(home, "xiaolongnv")
+	if err != nil {
+		t.Fatalf("LoadCodexProfile: %v", err)
+	}
+	if profile.Model != "gpt-6-astra" || profile.ReasoningEffort != "high" {
+		t.Fatalf("loaded profile = %+v", profile)
+	}
+	if err := UpdateCodexProfile(home, "xiaolongnv", func(cfg *CodexConfig) {
+		cfg.Model = "gpt-6-astra-v2"
+	}); err != nil {
+		t.Fatalf("UpdateCodexProfile: %v", err)
+	}
+	content, err := os.ReadFile(profilePath)
+	if err != nil {
+		t.Fatalf("read profile: %v", err)
+	}
+	text := string(content)
+	if !strings.Contains(text, `model = "gpt-6-astra-v2"`) || !strings.Contains(text, `custom_key = "keep"`) {
+		t.Fatalf("updated profile lost expected values: %s", text)
+	}
+}
+
 func TestNormalizeClaudeEffort(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -374,7 +402,9 @@ func TestResolvedFrontendsSupportsLegacyAndMultiFrontendConfigs(t *testing.T) {
 		DataDir: ".feidex-data",
 		Frontends: []FrontendConfig{
 			{
-				ID: "codex-main",
+				ID:           "codex-main",
+				CodexProfile: "main",
+				CodexHome:    "/tmp/codex-main",
 				FeishuConfig: FeishuConfig{
 					Backend:       RuntimeBackendCodex,
 					AppID:         "cli_codex",
@@ -403,7 +433,7 @@ func TestResolvedFrontendsSupportsLegacyAndMultiFrontendConfigs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(roundtrip frontend config) error = %v", err)
 	}
-	if got := loadedRoundTrip.ResolvedFrontends(); len(got) != 2 || got[0].Backend != RuntimeBackendCodex || got[1].Backend != RuntimeBackendClaude {
+	if got := loadedRoundTrip.ResolvedFrontends(); len(got) != 2 || got[0].Backend != RuntimeBackendCodex || got[1].Backend != RuntimeBackendClaude || got[0].CodexProfile != "main" || got[0].CodexHome != "/tmp/codex-main" {
 		t.Fatalf("roundtrip ResolvedFrontends() = %+v", got)
 	}
 }
@@ -429,6 +459,73 @@ func TestResolvedFrontendsPreservesUnsetBackend(t *testing.T) {
 	}
 	if frontends[0].Backend != "" {
 		t.Fatalf("ResolvedFrontends()[0].Backend = %q, want empty", frontends[0].Backend)
+	}
+}
+
+func TestNormalizeFrontendCodexProfileAndHome(t *testing.T) {
+	baseDir := filepath.Join(t.TempDir(), "config")
+	cfg := &Config{
+		Frontends: []FrontendConfig{{
+			ID:           "xiaolongnv",
+			CodexProfile: " xiaolongnv ",
+			CodexHome:    "./codex-home",
+		}},
+		Workspaces: []Workspace{{ID: "default", Cwd: "."}},
+	}
+	if err := cfg.Normalize(baseDir); err != nil {
+		t.Fatalf("Normalize() error = %v", err)
+	}
+	frontends := cfg.ResolvedFrontends()
+	if len(frontends) != 1 {
+		t.Fatalf("ResolvedFrontends() len = %d, want 1", len(frontends))
+	}
+	if frontends[0].CodexProfile != "xiaolongnv" {
+		t.Fatalf("CodexProfile = %q, want xiaolongnv", frontends[0].CodexProfile)
+	}
+	if !filepath.IsAbs(frontends[0].CodexHome) || !strings.HasSuffix(frontends[0].CodexHome, filepath.Join("config", "codex-home")) {
+		t.Fatalf("CodexHome = %q, want absolute config/codex-home path", frontends[0].CodexHome)
+	}
+}
+
+func TestNormalizeFeishuPlatform(t *testing.T) {
+	cfg := Default()
+	cfg.Workspaces[0].Cwd = t.TempDir()
+	cfg.Feishu.Platform = ""
+	if err := cfg.Normalize(t.TempDir()); err != nil {
+		t.Fatalf("Normalize(default platform) error = %v", err)
+	}
+	if cfg.Feishu.Platform != FeishuPlatform {
+		t.Fatalf("default platform = %q, want feishu", cfg.Feishu.Platform)
+	}
+	if got := FeishuOpenBaseURLForConfig(cfg.Feishu); got != FeishuOpenBaseURL {
+		t.Fatalf("FeishuOpenBaseURLForConfig(default) = %q", got)
+	}
+
+	cfg = Default()
+	cfg.Workspaces[0].Cwd = t.TempDir()
+	cfg.Frontends = []FrontendConfig{{
+		ID: "lark-main",
+		FeishuConfig: FeishuConfig{
+			Platform: LarkPlatform,
+			AppID:    "cli_lark",
+		},
+	}}
+	if err := cfg.Normalize(t.TempDir()); err != nil {
+		t.Fatalf("Normalize(lark frontend) error = %v", err)
+	}
+	frontends := cfg.ResolvedFrontends()
+	if len(frontends) != 1 || frontends[0].Feishu.Platform != LarkPlatform {
+		t.Fatalf("ResolvedFrontends(lark) = %+v", frontends)
+	}
+	if got := FeishuOpenBaseURLForConfig(frontends[0].Feishu); got != LarkOpenBaseURL {
+		t.Fatalf("FeishuOpenBaseURLForConfig(lark) = %q", got)
+	}
+
+	cfg = Default()
+	cfg.Workspaces[0].Cwd = t.TempDir()
+	cfg.Feishu.Platform = "teams"
+	if err := cfg.Normalize(t.TempDir()); err == nil {
+		t.Fatal("Normalize(unsupported platform) error = nil, want failure")
 	}
 }
 

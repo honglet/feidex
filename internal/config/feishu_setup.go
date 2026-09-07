@@ -19,7 +19,6 @@ import (
 
 const (
 	accountsBaseURL = "https://accounts.feishu.cn"
-	openBaseURL     = "https://open.feishu.cn"
 )
 
 type FeishuSetupMode string
@@ -40,6 +39,7 @@ type FeishuSetupOptions struct {
 	QRImage    string
 	FrontendID string
 	Backend    string
+	Platform   string
 }
 
 type registrationInitResponse struct {
@@ -82,6 +82,12 @@ func SetupFeishu(mode FeishuSetupMode, opts FeishuSetupOptions) error {
 	if err != nil {
 		return err
 	}
+	platform := setupPlatformForTarget(cfg, opts)
+	switch platform {
+	case FeishuPlatform, LarkPlatform:
+	default:
+		return fmt.Errorf("unsupported feishu platform %q; must be %q or %q", opts.Platform, FeishuPlatform, LarkPlatform)
+	}
 
 	switch mode {
 	case FeishuSetupAuto:
@@ -106,10 +112,13 @@ func SetupFeishu(mode FeishuSetupMode, opts FeishuSetupOptions) error {
 		if appID == "" || appSecret == "" {
 			return errors.New("bind mode requires --app or --app-id/--app-secret")
 		}
-		if err := validateFeishuCredentials(appID, appSecret); err != nil {
+		if err := validateFeishuCredentials(appID, appSecret, platform); err != nil {
 			return err
 		}
 	case FeishuSetupNew:
+		if platform != FeishuPlatform {
+			return errors.New("new app registration is currently supported only for Feishu; create the Lark app in Lark Open Platform and use feidex feishu bind --platform lark")
+		}
 		if appID != "" || appSecret != "" {
 			return errors.New("new mode does not accept existing credentials")
 		}
@@ -123,10 +132,11 @@ func SetupFeishu(mode FeishuSetupMode, opts FeishuSetupOptions) error {
 
 	frontendID := strings.TrimSpace(opts.FrontendID)
 	if frontendID != "" {
-		if err := saveToFrontend(cfg, frontendID, appID, appSecret, strings.TrimSpace(opts.Backend)); err != nil {
+		if err := saveToFrontend(cfg, frontendID, appID, appSecret, strings.TrimSpace(opts.Backend), platform); err != nil {
 			return err
 		}
 	} else {
+		cfg.Feishu.Platform = platform
 		cfg.Feishu.AppID = appID
 		cfg.Feishu.AppSecret = appSecret
 	}
@@ -142,7 +152,30 @@ func SetupFeishu(mode FeishuSetupMode, opts FeishuSetupOptions) error {
 	return nil
 }
 
-func saveToFrontend(cfg *Config, id, appID, appSecret, backend string) error {
+func setupPlatformForTarget(cfg *Config, opts FeishuSetupOptions) string {
+	if explicit := strings.ToLower(strings.TrimSpace(opts.Platform)); explicit != "" {
+		return explicit
+	}
+	frontendID := strings.TrimSpace(opts.FrontendID)
+	if cfg != nil && frontendID != "" {
+		for i := range cfg.Frontends {
+			if cfg.Frontends[i].ID == frontendID {
+				if platform := strings.ToLower(strings.TrimSpace(cfg.Frontends[i].Platform)); platform != "" {
+					return platform
+				}
+				break
+			}
+		}
+	}
+	if cfg != nil {
+		if platform := strings.ToLower(strings.TrimSpace(cfg.Feishu.Platform)); platform != "" {
+			return platform
+		}
+	}
+	return FeishuPlatform
+}
+
+func saveToFrontend(cfg *Config, id, appID, appSecret, backend, platform string) error {
 	if strings.Contains(id, ":") {
 		return fmt.Errorf("frontend id %q must not contain ':'", id)
 	}
@@ -156,6 +189,7 @@ func saveToFrontend(cfg *Config, id, appID, appSecret, backend string) error {
 	if idx >= 0 {
 		cfg.Frontends[idx].AppID = appID
 		cfg.Frontends[idx].AppSecret = appSecret
+		cfg.Frontends[idx].Platform = platform
 		if backend != "" {
 			cfg.Frontends[idx].Backend = backend
 		}
@@ -171,6 +205,7 @@ func saveToFrontend(cfg *Config, id, appID, appSecret, backend string) error {
 		cfg.Feishu = FeishuConfig{}
 	}
 	fc := FrontendConfig{ID: id}
+	fc.Platform = platform
 	fc.AppID = appID
 	fc.AppSecret = appSecret
 	if backend != "" {
@@ -196,12 +231,12 @@ func loadOrCreateConfig(path, workspaceID string) (*Config, error) {
 	return cfg, Save(path, cfg)
 }
 
-func validateFeishuCredentials(appID, appSecret string) error {
+func validateFeishuCredentials(appID, appSecret, platform string) error {
 	payload, _ := json.Marshal(map[string]string{
 		"app_id":     appID,
 		"app_secret": appSecret,
 	})
-	req, err := http.NewRequest(http.MethodPost, openBaseURL+"/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(payload))
+	req, err := http.NewRequest(http.MethodPost, FeishuOpenBaseURLForPlatform(platform)+"/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}

@@ -48,7 +48,7 @@ func forkCodexActiveConversation(a *App, sessionKey string, sess *state.Session,
 	if serviceTier := effectiveThreadServiceTier(sess); strings.TrimSpace(serviceTier) != "" {
 		params["serviceTier"] = strings.TrimSpace(serviceTier)
 	}
-	if model := configuredGlobalModel(a.cfg); strings.TrimSpace(model) != "" {
+	if model := configuredGlobalModel(a.EffectiveCodexConfig()); strings.TrimSpace(model) != "" {
 		params["model"] = strings.TrimSpace(model)
 	}
 

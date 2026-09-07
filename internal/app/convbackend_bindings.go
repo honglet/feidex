@@ -42,7 +42,7 @@ func (a convBackendConversationAdapter) ResumeCodexThread(app appconvbackend.App
 		ResetActiveOps:     sessionResetActiveOperations,
 		MarkThreadLive:     func(sessionKey, threadID string) { markSessionThreadLive(root, sessionKey, threadID) },
 		DefaultWorkspaceID: func() string { return defaultWorkspaceID(root) },
-		ConfiguredModel:    func() string { return configuredGlobalModel(root.cfg) },
+		ConfiguredModel:    func() string { return configuredGlobalModel(root.EffectiveCodexConfig()) },
 	}, sessionKey, sess, ws, sel)
 }
 

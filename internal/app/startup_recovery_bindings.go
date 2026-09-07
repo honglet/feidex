@@ -7,6 +7,7 @@ import (
 
 func recoverRuntimeState(a *App) {
 	newRuntimeMaintenanceService(a).RecoverRuntimeState()
+	newRuntimeMaintenanceService(a).CleanupExpiredAttachments()
 }
 
 func recoverSharedRuntimeState(a *App) {
@@ -15,6 +16,15 @@ func recoverSharedRuntimeState(a *App) {
 
 func recoverFrontendRuntimeState(a *App) {
 	newRuntimeMaintenanceService(a).RecoverFrontendRuntimeState()
+}
+
+func startAttachmentCleanup(a *App) {
+	if a == nil {
+		return
+	}
+	runAsync(a, func() {
+		newRuntimeMaintenanceService(a).CleanupExpiredAttachments()
+	})
 }
 
 func resetLiveThreadState(a *App) {

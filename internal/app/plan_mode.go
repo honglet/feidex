@@ -202,9 +202,9 @@ func resolveDefaultCodexCollaborationModeForSession(a *App, sess *state.Session)
 func defaultCodexCollaborationModeForSession(a *App, sess *state.Session) *state.SessionCollaborationMode {
 	model := ""
 	effort := ""
-	if a != nil && a.cfg != nil {
-		model = strings.TrimSpace(configuredGlobalModel(a.cfg))
-		effort = strings.TrimSpace(modelconfig.ConfiguredGlobalReasoningEffort(a.cfg))
+	if cfg := a.EffectiveCodexConfig(); cfg != nil {
+		model = strings.TrimSpace(configuredGlobalModel(cfg))
+		effort = strings.TrimSpace(modelconfig.ConfiguredGlobalReasoningEffort(cfg))
 	}
 	if mode := normalizeThreadCollaborationMode(sessionActiveCollaborationModeForLog(sess)); mode != nil && strings.EqualFold(mode.Mode, "default") {
 		if model == "" {
@@ -257,10 +257,11 @@ func canReuseCollaborationModeModelForDefault(a *App, mode *state.SessionCollabo
 	if !strings.EqualFold(mode.Mode, "plan") {
 		return true
 	}
-	if a == nil || a.cfg == nil {
+	cfg := a.EffectiveCodexConfig()
+	if cfg == nil {
 		return true
 	}
-	return strings.TrimSpace(modelconfig.ConfiguredPlanModel(a.cfg)) == ""
+	return strings.TrimSpace(modelconfig.ConfiguredPlanModel(cfg)) == ""
 }
 
 func (a *App) PlanModeTitleForSession(sessionKey, title string) string {
@@ -408,11 +409,12 @@ func splitLeadingTitlePrefixes(title string) (prefixes []string, rest string) {
 }
 
 func resolvePlanModeSettings(ctx context.Context, a *App, client CodexClient, preset *codexrpc.CollaborationModeMask) (model string, effort string, err error) {
-	model = strings.TrimSpace(modelconfig.ConfiguredPlanModel(a.cfg))
+	cfg := a.EffectiveCodexConfig()
+	model = strings.TrimSpace(modelconfig.ConfiguredPlanModel(cfg))
 	if model == "" {
-		model = strings.TrimSpace(configuredGlobalModel(a.cfg))
+		model = strings.TrimSpace(configuredGlobalModel(cfg))
 	}
-	effort = strings.TrimSpace(modelconfig.ConfiguredPlanReasoningEffort(a.cfg))
+	effort = strings.TrimSpace(modelconfig.ConfiguredPlanReasoningEffort(cfg))
 	if effort == "" && preset != nil && preset.ReasoningEffort != nil {
 		effort = strings.TrimSpace(*preset.ReasoningEffort)
 	}
@@ -426,7 +428,7 @@ func resolvePlanModeSettings(ctx context.Context, a *App, client CodexClient, pr
 	}, &result); err != nil {
 		return "", "", fmt.Errorf("读取 model 列表失败: %w", err)
 	}
-	entry, resolvedEffort := modelconfig.EffectivePlanConfiguredModelAndEffort(a.cfg, result, preset)
+	entry, resolvedEffort := modelconfig.EffectivePlanConfiguredModelAndEffort(cfg, result, preset)
 	if entry == nil {
 		return "", "", fmt.Errorf("当前 Codex model 不可用，无法开启 `/plan`")
 	}
@@ -438,8 +440,9 @@ func resolvePlanModeSettings(ctx context.Context, a *App, client CodexClient, pr
 }
 
 func resolveDefaultCollaborationModeSettings(ctx context.Context, a *App, client CodexClient) (model string, effort string, err error) {
-	model = strings.TrimSpace(configuredGlobalModel(a.cfg))
-	effort = strings.TrimSpace(modelconfig.ConfiguredGlobalReasoningEffort(a.cfg))
+	cfg := a.EffectiveCodexConfig()
+	model = strings.TrimSpace(configuredGlobalModel(cfg))
+	effort = strings.TrimSpace(modelconfig.ConfiguredGlobalReasoningEffort(cfg))
 	if model != "" {
 		return model, effort, nil
 	}
@@ -450,7 +453,7 @@ func resolveDefaultCollaborationModeSettings(ctx context.Context, a *App, client
 	}, &result); err != nil {
 		return "", "", fmt.Errorf("读取 model 列表失败: %w", err)
 	}
-	entry, resolvedEffort := modelconfig.EffectiveConfiguredModelAndEffort(a.cfg, result)
+	entry, resolvedEffort := modelconfig.EffectiveConfiguredModelAndEffort(cfg, result)
 	if entry == nil {
 		return "", "", fmt.Errorf("当前 Codex model 不可用，无法恢复 default collaboration mode")
 	}
@@ -500,10 +503,11 @@ func defaultCollaborationModeWithConfiguredEffort(a *App, mode *state.SessionCol
 	if mode == nil || !strings.EqualFold(mode.Mode, "default") || strings.TrimSpace(mode.ReasoningEffort) != "" {
 		return mode
 	}
-	if a == nil || a.cfg == nil {
+	cfg := a.EffectiveCodexConfig()
+	if cfg == nil {
 		return mode
 	}
-	effort := strings.TrimSpace(modelconfig.ConfiguredGlobalReasoningEffort(a.cfg))
+	effort := strings.TrimSpace(modelconfig.ConfiguredGlobalReasoningEffort(cfg))
 	if effort == "" {
 		return mode
 	}

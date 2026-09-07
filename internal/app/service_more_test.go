@@ -18,9 +18,11 @@ func TestNewServiceBuildsFrontendScopedApps(t *testing.T) {
 	}()
 
 	codexClients := []*fakeCodexClient{}
-	newCodexClient = func(config.CodexConfig) CodexClient {
+	var codexConfigs []config.CodexConfig
+	newCodexClient = func(cfg config.CodexConfig) CodexClient {
 		client := &fakeCodexClient{}
 		codexClients = append(codexClients, client)
+		codexConfigs = append(codexConfigs, cfg)
 		return client
 	}
 	feishuAppIDs := []string{}
@@ -40,7 +42,9 @@ func TestNewServiceBuildsFrontendScopedApps(t *testing.T) {
 	cfg.Workspaces[0].Cwd = t.TempDir()
 	cfg.Frontends = []config.FrontendConfig{
 		{
-			ID: "codex-main",
+			ID:           "codex-main",
+			CodexProfile: "main",
+			CodexHome:    "/tmp/codex-main",
 			FeishuConfig: config.FeishuConfig{
 				Backend:       config.RuntimeBackendCodex,
 				AppID:         "cli_codex",
@@ -70,6 +74,9 @@ func TestNewServiceBuildsFrontendScopedApps(t *testing.T) {
 	}
 	if len(codexClients) != 1 {
 		t.Fatalf("newCodexClient calls = %d, want 1", len(codexClients))
+	}
+	if len(codexConfigs) != 1 || codexConfigs[0].Profile != "main" || codexConfigs[0].Home != "/tmp/codex-main" {
+		t.Fatalf("newCodexClient config = %+v, want profile/home overrides", codexConfigs)
 	}
 	if len(claudeClients) != 1 {
 		t.Fatalf("newClaudeCore calls = %d, want 1", len(claudeClients))

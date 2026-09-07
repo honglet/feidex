@@ -293,10 +293,10 @@ func TestRunFeishuAndSetup(t *testing.T) {
 		capturedOpts = opts
 		return nil
 	}
-	if got := runFeishu([]string{"bind", "--config", "cfg.toml", "--workspace", "ws", "--app", "id:secret", "--app-id", "id", "--app-secret", "secret", "--timeout", "12", "--qr-image", "qr.png"}); got != 0 {
+	if got := runFeishu([]string{"bind", "--config", "cfg.toml", "--workspace", "ws", "--app", "id:secret", "--app-id", "id", "--app-secret", "secret", "--timeout", "12", "--qr-image", "qr.png", "--platform", "lark"}); got != 0 {
 		t.Fatalf("runFeishu(bind) = %d, want 0", got)
 	}
-	if capturedMode != config.FeishuSetupBind || capturedOpts.ConfigPath != "cfg.toml" || capturedOpts.Timeout.Seconds() != 12 {
+	if capturedMode != config.FeishuSetupBind || capturedOpts.ConfigPath != "cfg.toml" || capturedOpts.Timeout.Seconds() != 12 || capturedOpts.Platform != "lark" {
 		t.Fatalf("runFeishu(bind) captured = mode=%q opts=%+v", capturedMode, capturedOpts)
 	}
 

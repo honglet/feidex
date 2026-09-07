@@ -70,6 +70,9 @@ func (s *Service) Start(ctx context.Context) error {
 			return err
 		}
 	}
+	if len(s.apps) > 0 {
+		startAttachmentCleanup(s.apps[0])
+	}
 	for _, app := range s.apps {
 		newRuntimeMaintenanceService(app).StartDriveArtifactGCLoop(ctx)
 		newRuntimeMaintenanceService(app).StartUpgradeCheckLoop(ctx)

@@ -1,6 +1,9 @@
 # Feidex On macOS
 
-This repository's built-in `daemon` management is Linux-only. On macOS, `launchd` is the natural first thing to try, but on this machine it turned out to be finicky enough that a `tmux`-managed process is the more pragmatic day-to-day choice.
+This repository's built-in `daemon` management is Linux-only. On macOS, use a
+per-user `launchd` LaunchAgent. If the checkout or a workspace is on a removable
+volume, use a stable code-signing identity for the Feidex binary so macOS privacy
+authorization survives rebuilds.
 
 This guide assumes you run Feidex from this checkout at:
 
@@ -21,9 +24,13 @@ Using `launchd` gives you:
 - automatic restart if the process exits
 - stable log files instead of tying Feidex to an open terminal window
 
-## Best-Effort `launchd` Setup
+## `launchd` Setup
 
-This section documents the best `launchd` setup we reached during debugging. It is useful as a reference and may work on another Mac, but for this specific machine/install we still preferred `tmux` in the end.
+The binary and config remain in the checkout. Only the small wrapper and the
+LaunchAgent definition live under the user's home directory.
+
+For the complete repeatable setup, see
+[docs/macos-launchd-tcc-setup.md](docs/macos-launchd-tcc-setup.md).
 
 ## Paths Used In This Setup
 
@@ -37,7 +44,54 @@ This section documents the best `launchd` setup we reached during debugging. It 
 - Stderr log: `/tmp/feidex.stderr.log`
 - Wrapper log: `/tmp/feidex.run.log`
 
-The binary and config can live on the external volume, but the LaunchAgent working directory should stay on a normal local path under `/Users/...`. In testing, using `/Volumes/Second HD/...` as `WorkingDirectory` caused `getcwd: Operation not permitted` failures under `launchd`.
+The binary and config can live on the external volume, but the LaunchAgent working directory should stay on a normal local path under `/Users/...`. In testing, using `/Volumes/Second HD/...` as `WorkingDirectory` caused `getcwd: Operation not permitted` failures under `launchd` before removable-volume access had been authorized.
+
+## 0. Give Feidex A Stable Signing Identity
+
+A normal Go build on macOS is linker/ad-hoc signed. Its designated requirement is
+only its CDHash, and that hash changes whenever the binary changes. macOS TCC then
+treats every rebuilt Feidex binary as different code, even when it has the same
+path. An old `Allowed` entry in the privacy database does not help because its
+stored CDHash no longer matches.
+
+Use an Apple Development/Developer ID certificate, or create and trust a local
+code-signing certificate in Keychain Access. This is a one-time machine setup.
+Confirm that macOS sees the identity:
+
+```bash
+security find-identity -v -p codesigning
+```
+
+Build and sign Feidex in place in the checkout:
+
+```bash
+FEIDEX_CODESIGN_IDENTITY="Feidex Local Code Signing" \
+  ./scripts/build_macos_signed.sh
+```
+
+You may put `FEIDEX_CODESIGN_IDENTITY` in the launch/deployment environment. If
+the identity is in a non-default keychain, also set `FEIDEX_CODESIGN_KEYCHAIN`.
+The signing identifier defaults to `com.yuhong.feidex` and can be overridden with
+`FEIDEX_CODESIGN_IDENTIFIER`.
+
+Verify that the designated requirement is certificate-based and does not consist
+only of `cdhash H"..."`:
+
+```bash
+codesign -dr - bin/feidex
+```
+
+The first launch with the newly signed identity still needs one macOS approval.
+Start the LaunchAgent while logged in, then approve the removable-volume prompt.
+If the Mac is remote, use Screen Sharing to answer that one-time prompt. Later
+builds signed with the same identity and identifier reuse the authorization.
+
+There is no supported `tccutil` command that grants this access: `tccutil` can
+only reset an existing decision. A Feishu or Codex approval also cannot grant a
+macOS TCC permission. For completely unattended remote deployment, distribute a
+PPPC profile for `SystemPolicyRemovableVolumes` through MDM, using the same path
+and designated code requirement. Manually installing such a profile does not
+provide a silent grant on current macOS releases.
 
 ## 1. Create The LaunchAgent
 
@@ -201,7 +255,7 @@ In practice, `/tmp/feidex.run.log` was the most useful file, because the wrapper
 
 - `launchd` requires absolute paths. Do not use relative paths in the plist.
 - On this machine, use the real mounted path under `/Volumes/Second HD/...` for the binary and config, not a convenience alias path such as `/Users/yuhong/proj/feidex`.
-- Do not use the external-volume repo path as `WorkingDirectory`. Using `/Volumes/Second HD/...` as the process cwd caused `getcwd` failures under `launchd`; a local directory such as `/Users/yuhong` worked.
+- Do not use the external-volume repo path as `WorkingDirectory`. Using `/Volumes/Second HD/...` as the process cwd caused `getcwd` failures before authorization; a local directory such as `/Users/yuhong` also gives the launcher a reliable starting directory.
 - `launchd` starts jobs with a much smaller environment than an interactive shell. In particular, `codex` may fail unless `PATH`, `HOME`, and locale variables are set explicitly.
 - Avoid embedding long shell one-liners directly in the plist when your paths contain spaces such as `/Volumes/Second HD/...`. A dedicated script file is more reliable and easier to debug.
 - A direct `env -i ... feidex serve --config ...` launch from Terminal worked reliably on this machine. Reproducing that exact environment in a wrapper script was the most promising `launchd` approach.
@@ -209,11 +263,11 @@ In practice, `/tmp/feidex.run.log` was the most useful file, because the wrapper
 - Build the binary before loading the service:
 
 ```bash
-mkdir -p bin
-go build -o bin/feidex ./cmd/feidex
+FEIDEX_CODESIGN_IDENTITY="Feidex Local Code Signing" \
+  ./scripts/build_macos_signed.sh
 ```
 
-- If you replace the binary with a new build, a restart is enough:
+- If you replace the binary with a build signed by the same identity, a restart is enough:
 
 ```bash
 launchctl kickstart -kp gui/$(id -u)/com.yuhong.feidex
@@ -226,22 +280,20 @@ launchctl kickstart -kp gui/$(id -u)/com.yuhong.feidex
 These points summarize the debugging path and the practical lessons from it:
 
 - Using `/Users/yuhong/proj/feidex` as a convenience path was a mistake for `launchd`; the real `/Volumes/Second HD/...` path was safer for binary/config references.
-- Using `/Volumes/Second HD/...` as `WorkingDirectory` failed with `getcwd: Operation not permitted`.
+- Using `/Volumes/Second HD/...` as `WorkingDirectory` failed with `getcwd: Operation not permitted` while the external-volume permission was unresolved.
 - Putting the wrapper script itself on the external volume also failed under `launchd` with `Operation not permitted`.
 - A local wrapper under `/Users/yuhong/bin/` was significantly more reliable.
 - `codex` depended on `node`, so `PATH` had to include `/opt/homebrew/bin`.
 - A minimal environment created with `env -i` still allowed `feidex` to start correctly when launched manually from Terminal.
-- Even after the `launchd` job successfully spawned the real `feidex` process, behavior was still inconsistent enough that `tmux` was chosen as the operational fallback on this machine.
+- The original binary was linker/ad-hoc signed with identifier `a.out`; every rebuild changed its CDHash and invalidated the earlier removable-volume decision.
+- TCC attributed filesystem work done by child processes such as Codex and Git to the responsible Feidex process, so copying only Feidex locally did not authorize external workspaces.
 
 ## 7. Practical Recommendation
 
-If you specifically want to keep experimenting with `launchd`, the setup above is the best one we found.
-
-For a personal Mac mini installation, though, the lower-risk operational choice is:
-
-- run Feidex in `tmux`
-- keep the explicit `env -i` startup recipe
-- treat `launchd` support here as best-effort rather than fully solved
+Use `launchd` with the external-volume binary and config, a local wrapper, a local
+absolute `data_dir`, and a stably signed Feidex binary. Complete the initial TCC
+approval through the GUI, or use an MDM-delivered PPPC policy when no interactive
+remote desktop session is available.
 
 ## 8. Optional Aliases
 

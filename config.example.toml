@@ -8,6 +8,7 @@ level = "info"
 # Valid values: "codex" | "claude"
 # Leave unset to get an interactive backend-chooser card on first message.
 [feishu]
+# platform = "feishu" # or "lark"
 # backend = ""
 app_id = "cli_xxx"
 app_secret = "sec_xxx"
@@ -25,7 +26,10 @@ quiet = "progress"
 #
 # [[frontend]]
 # id = "feishu-codex"
+# platform = "feishu"
 # backend = "codex"
+# codex_profile = "main"       # optional: ~/.codex/main.config.toml
+# codex_home = ".codex-main"   # optional: separate CODEX_HOME for this frontend
 # app_id = "cli_xxx"
 # app_secret = "sec_xxx"
 # allow_from = []
@@ -35,6 +39,7 @@ quiet = "progress"
 #
 # [[frontend]]
 # id = "feishu-claude"
+# platform = "lark"
 # backend = "claude"
 # app_id = "cli_yyy"
 # app_secret = "sec_yyy"

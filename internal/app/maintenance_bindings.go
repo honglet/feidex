@@ -81,7 +81,7 @@ func (a *App) MaintenanceConfiguredGlobalModel() string {
 	if a == nil {
 		return ""
 	}
-	return configuredGlobalModel(a.cfg)
+	return configuredGlobalModel(a.EffectiveCodexConfig())
 }
 
 func (a *App) MaintenanceRecoverStartupConversation(sessionKey, workspaceID string, sess *state.Session, ws *config.Workspace, effectiveModel string) {

@@ -31,6 +31,7 @@ type LogConfig struct {
 }
 
 type FeishuConfig struct {
+	Platform            string    `toml:"platform"`
 	Backend             string    `toml:"backend"`
 	AutoRetry           bool      `toml:"codex_auto_retry"`
 	AppID               string    `toml:"app_id"`
@@ -45,15 +46,19 @@ type FeishuConfig struct {
 }
 
 type FrontendConfig struct {
-	ID string `toml:"id"`
+	ID           string `toml:"id"`
+	CodexProfile string `toml:"codex_profile"`
+	CodexHome    string `toml:"codex_home"`
 	FeishuConfig
 }
 
 type ResolvedFrontend struct {
-	ID          string
-	Backend     string
-	Feishu      FeishuConfig
-	ConfigIndex int
+	ID           string
+	Backend      string
+	CodexProfile string
+	CodexHome    string
+	Feishu       FeishuConfig
+	ConfigIndex  int
 }
 
 type CodexConfig struct {
@@ -68,6 +73,105 @@ type CodexConfig struct {
 	ReasoningEffort     string `toml:"reasoning_effort"`
 	PlanModel           string `toml:"plan_model"`
 	PlanReasoningEffort string `toml:"plan_reasoning_effort"`
+	// Profile and Home are frontend-scoped runtime overrides. They are not
+	// serialized as part of the global [codex] section.
+	Profile string `toml:"-"`
+	Home    string `toml:"-"`
+}
+
+// CodexProfilePath returns the profile TOML path used by Codex CLI.
+func CodexProfilePath(home, profile string) (string, error) {
+	profile = strings.TrimSpace(profile)
+	if profile == "" {
+		return "", errors.New("empty Codex profile")
+	}
+	if profile == "." || profile == ".." || strings.ContainsAny(profile, `/\\`) {
+		return "", fmt.Errorf("invalid Codex profile name %q", profile)
+	}
+	home = strings.TrimSpace(home)
+	if home == "" {
+		home = strings.TrimSpace(os.Getenv("CODEX_HOME"))
+	}
+	if home == "" {
+		userHome, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve Codex home: %w", err)
+		}
+		home = filepath.Join(userHome, ".codex")
+	}
+	return filepath.Join(home, profile+".config.toml"), nil
+}
+
+// LoadCodexProfile loads the model-related settings from a Codex profile.
+// Unknown profile keys remain the responsibility of Codex CLI itself.
+func LoadCodexProfile(home, profile string) (CodexConfig, error) {
+	path, err := CodexProfilePath(home, profile)
+	if err != nil {
+		return CodexConfig{}, err
+	}
+	var values codexProfileConfig
+	if _, err := toml.DecodeFile(path, &values); err != nil {
+		return CodexConfig{}, fmt.Errorf("load Codex profile %q from %s: %w", profile, path, err)
+	}
+	return values.codexConfig(), nil
+}
+
+type codexProfileConfig struct {
+	Model                string `toml:"model"`
+	ModelReasoningEffort string `toml:"model_reasoning_effort"`
+	PlanModel            string `toml:"plan_model"`
+	PlanReasoningEffort  string `toml:"plan_reasoning_effort"`
+}
+
+func (p codexProfileConfig) codexConfig() CodexConfig {
+	return CodexConfig{
+		Model:               p.Model,
+		ReasoningEffort:     p.ModelReasoningEffort,
+		PlanModel:           p.PlanModel,
+		PlanReasoningEffort: p.PlanReasoningEffort,
+	}
+}
+
+// UpdateCodexProfile updates the model-related settings in a Codex profile
+// while preserving unrelated profile keys.
+func UpdateCodexProfile(home, profile string, mutate func(*CodexConfig)) error {
+	path, err := CodexProfilePath(home, profile)
+	if err != nil {
+		return err
+	}
+	values := map[string]any{}
+	if _, err := toml.DecodeFile(path, &values); err != nil {
+		return fmt.Errorf("load Codex profile %q from %s: %w", profile, path, err)
+	}
+	var profileValues codexProfileConfig
+	if _, err := toml.DecodeFile(path, &profileValues); err != nil {
+		return fmt.Errorf("decode Codex profile %q from %s: %w", profile, path, err)
+	}
+	cfg := profileValues.codexConfig()
+	if mutate != nil {
+		mutate(&cfg)
+	}
+	setOrDelete := func(key, value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			delete(values, key)
+			return
+		}
+		values[key] = value
+	}
+	setOrDelete("model", cfg.Model)
+	setOrDelete("model_reasoning_effort", cfg.ReasoningEffort)
+	setOrDelete("plan_model", cfg.PlanModel)
+	setOrDelete("plan_reasoning_effort", cfg.PlanReasoningEffort)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("open Codex profile %s: %w", path, err)
+	}
+	defer file.Close()
+	if err := toml.NewEncoder(file).Encode(values); err != nil {
+		return fmt.Errorf("save Codex profile %s: %w", path, err)
+	}
+	return nil
 }
 
 type ClaudeConfig struct {
@@ -99,6 +203,10 @@ const (
 	RuntimeBackendCodex  = "codex"
 	RuntimeBackendClaude = "claude"
 	DefaultFrontendID    = "default"
+	FeishuPlatform       = "feishu"
+	LarkPlatform         = "lark"
+	FeishuOpenBaseURL    = "https://open.feishu.cn"
+	LarkOpenBaseURL      = "https://open.larksuite.com"
 )
 
 func Default() *Config {
@@ -220,6 +328,11 @@ func (c *Config) Normalize(baseDir string) error {
 	for i := range c.Frontends {
 		frontend := &c.Frontends[i]
 		frontend.ID = strings.TrimSpace(frontend.ID)
+		frontend.CodexProfile = strings.TrimSpace(frontend.CodexProfile)
+		frontend.CodexHome = strings.TrimSpace(frontend.CodexHome)
+		if frontend.CodexHome != "" && !filepath.IsAbs(frontend.CodexHome) {
+			frontend.CodexHome = filepath.Clean(filepath.Join(baseDir, frontend.CodexHome))
+		}
 		if frontend.ID == "" {
 			return errors.New("frontend.id is required")
 		}
@@ -282,6 +395,7 @@ func (c *Config) Normalize(baseDir string) error {
 
 func defaultFeishuConfig() FeishuConfig {
 	return FeishuConfig{
+		Platform:      FeishuPlatform,
 		GroupAtOnly:   true,
 		CardEnabled:   true,
 		ReplyInThread: true,
@@ -292,6 +406,15 @@ func defaultFeishuConfig() FeishuConfig {
 func normalizeFeishuConfig(cfg *FeishuConfig) error {
 	if cfg == nil {
 		return nil
+	}
+	cfg.Platform = strings.ToLower(strings.TrimSpace(cfg.Platform))
+	if cfg.Platform == "" {
+		cfg.Platform = FeishuPlatform
+	}
+	switch cfg.Platform {
+	case FeishuPlatform, LarkPlatform:
+	default:
+		return fmt.Errorf("unsupported feishu.platform %q; must be %q or %q", cfg.Platform, FeishuPlatform, LarkPlatform)
 	}
 	cfg.Backend = normalizeBackendName(cfg.Backend)
 	switch cfg.Backend {
@@ -305,6 +428,19 @@ func normalizeFeishuConfig(cfg *FeishuConfig) error {
 	}
 	cfg.Quiet = quietMode
 	return nil
+}
+
+func FeishuOpenBaseURLForPlatform(platform string) string {
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case LarkPlatform:
+		return LarkOpenBaseURL
+	default:
+		return FeishuOpenBaseURL
+	}
+}
+
+func FeishuOpenBaseURLForConfig(cfg FeishuConfig) string {
+	return FeishuOpenBaseURLForPlatform(cfg.Platform)
 }
 
 func firstNonEmptyString(values ...string) string {
@@ -334,10 +470,12 @@ func (c *Config) ResolvedFrontends() []ResolvedFrontend {
 		frontend := c.Frontends[i]
 		frontend.FeishuConfig.Backend = normalizeBackendName(frontend.FeishuConfig.Backend)
 		out = append(out, ResolvedFrontend{
-			ID:          strings.TrimSpace(frontend.ID),
-			Backend:     frontend.FeishuConfig.Backend,
-			Feishu:      frontend.FeishuConfig,
-			ConfigIndex: i,
+			ID:           strings.TrimSpace(frontend.ID),
+			Backend:      frontend.FeishuConfig.Backend,
+			CodexProfile: strings.TrimSpace(frontend.CodexProfile),
+			CodexHome:    strings.TrimSpace(frontend.CodexHome),
+			Feishu:       frontend.FeishuConfig,
+			ConfigIndex:  i,
 		})
 	}
 	return out

@@ -141,7 +141,7 @@ func (s ConfigurationService) fetchPlanCollaborationModePresetForRender() *codex
 	if s.deps.Codex.FetchPlanCollaborationModePreset == nil {
 		return nil
 	}
-	cfg := s.App.Config()
+	cfg := effectiveCodexConfig(s.App)
 	if cfg == nil || !cfg.Codex.ExperimentalAPI {
 		return nil
 	}
@@ -152,6 +152,15 @@ func (s ConfigurationService) fetchPlanCollaborationModePresetForRender() *codex
 		return nil
 	}
 	return preset
+}
+
+func effectiveCodexConfig(a appcore.AppConfig) *config.Config {
+	if provider, ok := a.(interface{ EffectiveCodexConfig() *config.Config }); ok {
+		if cfg := provider.EffectiveCodexConfig(); cfg != nil {
+			return cfg
+		}
+	}
+	return a.Config()
 }
 
 // ---------------------------------------------------------------------------
@@ -329,7 +338,7 @@ func (s ConfigurationService) RenderClaudeModelMenuCard(sessionKey string) map[s
 
 // RenderCodexModelMenuCard renders the Codex model menu card.
 func (s ConfigurationService) RenderCodexModelMenuCard(sessionKey string) map[string]any {
-	cfg := s.App.Config()
+	cfg := effectiveCodexConfig(s.App)
 	modelValue := firstNonEmpty(appmodelconfig.ConfiguredGlobalModel(cfg), "(default)")
 	effortValue := firstNonEmpty(appmodelconfig.ConfiguredGlobalReasoningEffort(cfg), "(default)")
 	fastValue := "-"
@@ -428,7 +437,7 @@ func (s ConfigurationService) CompleteCodexGlobalReasoningEffortSet(action *feis
 	if err != nil {
 		return &callback.CardActionTriggerResponse{Toast: &callback.Toast{Type: "error", Content: err.Error()}}, nil
 	}
-	selectedModel, _ := appmodelconfig.EffectiveConfiguredModelAndEffort(s.App.Config(), result)
+	selectedModel, _ := appmodelconfig.EffectiveConfiguredModelAndEffort(effectiveCodexConfig(s.App), result)
 	if strings.TrimSpace(reasoningEffort) != "" && !appmodelconfig.ModelSupportsEffort(selectedModel, reasoningEffort) {
 		return &callback.CardActionTriggerResponse{Toast: &callback.Toast{Type: "warning", Content: "当前模型不支持这个推理强度"}}, nil
 	}
@@ -514,7 +523,7 @@ func (s ConfigurationService) RenderCodexStatusBody(sess *state.Session) string 
 		status = firstNonEmpty(sess.Status, "idle")
 		queueLen = len(sess.Queue)
 	}
-	cfg := s.App.Config()
+	cfg := effectiveCodexConfig(s.App)
 	ws = config.FindWorkspace(cfg, workspaceID)
 	model := appmodelconfig.ConfiguredGlobalModel(cfg)
 	effort := appmodelconfig.ConfiguredGlobalReasoningEffort(cfg)

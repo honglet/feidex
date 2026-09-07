@@ -1,6 +1,7 @@
 package app
 
 import (
+	"strings"
 	"sync"
 
 	"feidex/internal/app/appcore"
@@ -26,6 +27,49 @@ func (a *App) Config() *config.Config {
 		return nil
 	}
 	return a.cfg
+}
+
+// EffectiveCodexConfig returns the shared config with this frontend's Codex
+// profile values overlaid. The returned config is a copy and is safe for
+// display and request construction; mutations must be persisted explicitly.
+func (a *App) EffectiveCodexConfig() *config.Config {
+	if a == nil || a.cfg == nil {
+		return nil
+	}
+	a.configMu.RLock()
+	defer a.configMu.RUnlock()
+	copyCfg := *a.cfg
+	copyCfg.Codex = a.cfg.Codex
+	if strings.TrimSpace(a.codexProfile) == "" {
+		return &copyCfg
+	}
+	profile, err := config.LoadCodexProfile(a.codexHome, a.codexProfile)
+	if err != nil {
+		return &copyCfg
+	}
+	if strings.TrimSpace(profile.Model) != "" {
+		copyCfg.Codex.Model = profile.Model
+	}
+	if strings.TrimSpace(profile.ReasoningEffort) != "" {
+		copyCfg.Codex.ReasoningEffort = profile.ReasoningEffort
+	}
+	if strings.TrimSpace(profile.PlanModel) != "" {
+		copyCfg.Codex.PlanModel = profile.PlanModel
+	} else if strings.TrimSpace(profile.Model) != "" {
+		copyCfg.Codex.PlanModel = profile.Model
+	}
+	if strings.TrimSpace(profile.PlanReasoningEffort) != "" {
+		copyCfg.Codex.PlanReasoningEffort = profile.PlanReasoningEffort
+	}
+	return &copyCfg
+}
+
+// CodexProfile returns the active frontend profile name.
+func (a *App) CodexProfile() string {
+	if a == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.codexProfile)
 }
 
 // Store returns the state store.

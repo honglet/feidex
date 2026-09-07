@@ -194,3 +194,29 @@ func TestFetchWSEndpointURLAndValidateWSStartupErrors(t *testing.T) {
 		t.Fatalf("validateWSStartup(handshake) = %v", err)
 	}
 }
+
+func TestFetchWSEndpointURLUsesLarkPlatformHost(t *testing.T) {
+	origTransport := http.DefaultTransport
+	t.Cleanup(func() {
+		http.DefaultTransport = origTransport
+	})
+
+	var host string
+	http.DefaultTransport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		host = req.URL.Host
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"code":0,"data":{"URL":"wss://example.test/ws"}}`)),
+			Request:    req,
+		}, nil
+	})
+
+	a := New(config.FeishuConfig{Platform: config.LarkPlatform, AppID: "app", AppSecret: "secret"})
+	if got, err := a.fetchWSEndpointURL(context.Background()); err != nil || got != "wss://example.test/ws" {
+		t.Fatalf("fetchWSEndpointURL(lark) = %q, %v", got, err)
+	}
+	if host != "open.larksuite.com" {
+		t.Fatalf("websocket endpoint host = %q, want open.larksuite.com", host)
+	}
+}

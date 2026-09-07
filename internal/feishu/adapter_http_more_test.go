@@ -596,3 +596,30 @@ func TestFetchBotOpenIDSuccess(t *testing.T) {
 		t.Fatalf("fetchBotOpenID() = %q, want ou_bot", got)
 	}
 }
+
+func TestFetchBotOpenIDUsesLarkPlatformHost(t *testing.T) {
+	origTransport := http.DefaultTransport
+	defer func() { http.DefaultTransport = origTransport }()
+
+	var hosts []string
+	http.DefaultTransport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		hosts = append(hosts, req.URL.Host)
+		switch req.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			body := `{"code":0,"tenant_access_token":"tenant-token"}`
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+		case "/open-apis/bot/v3/info":
+			body := `{"code":0,"bot":{"open_id":"ou_lark_bot"}}`
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+		default:
+			return &http.Response{StatusCode: http.StatusNotFound, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"code":404}`)), Request: req}, nil
+		}
+	})
+
+	if got := (&Adapter{cfg: config.FeishuConfig{Platform: config.LarkPlatform, AppID: "app", AppSecret: "secret"}}).fetchBotOpenID(); got != "ou_lark_bot" {
+		t.Fatalf("fetchBotOpenID(lark) = %q, want ou_lark_bot", got)
+	}
+	if len(hosts) != 2 || hosts[0] != "open.larksuite.com" || hosts[1] != "open.larksuite.com" {
+		t.Fatalf("fetchBotOpenID(lark) hosts = %+v, want open.larksuite.com", hosts)
+	}
+}

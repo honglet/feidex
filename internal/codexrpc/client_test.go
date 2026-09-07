@@ -394,6 +394,62 @@ done
 	}
 }
 
+func TestStartStdioUsesCodexProfileAndHome(t *testing.T) {
+	stubCodexCommandVersion(t, "")
+	dir := t.TempDir()
+	argsPath := filepath.Join(dir, "args.log")
+	envPath := filepath.Join(dir, "home.log")
+	scriptPath := filepath.Join(dir, "codex-rpc.sh")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' "$@" > %q
+printf '%%s' "$CODEX_HOME" > %q
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%%s\n' '{"id":1,"result":{"userAgent":"ua"}}'
+      ;;
+    *'"method":"initialized"'*)
+      exit 0
+      ;;
+  esac
+done
+`, argsPath, envPath)
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile(script) error = %v", err)
+	}
+	home := filepath.Join(dir, "codex-home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatalf("MkdirAll(home) error = %v", err)
+	}
+	profilePath := filepath.Join(home, "xiaolongnv.config.toml")
+	if err := os.WriteFile(profilePath, []byte("model = \"gpt-test\"\nmodel_reasoning_effort = \"high\"\n[features]\nweb_search = true\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(profile) error = %v", err)
+	}
+	client := New(config.CodexConfig{Command: scriptPath, Profile: "xiaolongnv", Home: home})
+	if err := client.Start(context.Background(), true); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	argsBytes, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("ReadFile(argsPath) error = %v", err)
+	}
+	argsText := string(argsBytes)
+	for _, want := range []string{"app-server", "model=\"gpt-test\"", "model_reasoning_effort=\"high\"", "features.web_search=true"} {
+		if !strings.Contains(argsText, want) {
+			t.Fatalf("args = %q, want %q", argsText, want)
+		}
+	}
+	envBytes, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("ReadFile(envPath) error = %v", err)
+	}
+	if got := strings.TrimSpace(string(envBytes)); got != home {
+		t.Fatalf("CODEX_HOME = %q, want %q", got, home)
+	}
+}
+
 func TestStartKeepsProcessAliveAfterStartupContextCancel(t *testing.T) {
 	stubCodexCommandVersion(t, "")
 	dir := t.TempDir()

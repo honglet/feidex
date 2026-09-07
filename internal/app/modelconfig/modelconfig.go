@@ -119,6 +119,10 @@ type ModelConfigService struct {
 	GetConfig   func() *config.Config
 	GetCfgPath  func() string
 	GetConfigMu func() *sync.RWMutex
+	// Frontend-scoped Codex profile callbacks. When configured, Codex model
+	// reads and writes use the profile instead of the shared global section.
+	GetCodexConfig    func() *config.Config
+	UpdateCodexConfig func(func(*config.CodexConfig), codexrpc.ModelListResult) error
 
 	// Feishu client callbacks.
 	ReplyText func(ctx context.Context, msgID string, text string, replyInThread bool) error
@@ -150,6 +154,13 @@ type ModelConfigService struct {
 
 	// Card action response callback.
 	ReplyCommandActionResponse func(msg *feishu.InboundMessage, resp *callback.CardActionTriggerResponse) error
+}
+
+func (s ModelConfigService) codexConfig() *config.Config {
+	if s.GetCodexConfig != nil {
+		return s.GetCodexConfig()
+	}
+	return s.GetConfig()
 }
 
 // ---------------------------------------------------------------------------
@@ -395,7 +406,7 @@ func (s ModelConfigService) RenderModelConfigCard(result codexrpc.ModelListResul
 	if menuAction == "" {
 		menuAction = "menu.model"
 	}
-	cfg := s.GetConfig()
+	cfg := s.codexConfig()
 	selectedModel, selectedEffort := EffectiveConfiguredModelAndEffort(cfg, result)
 	selectedPlanModel, selectedPlanEffort := EffectivePlanConfiguredModelAndEffort(cfg, result, planPreset)
 	modelName := "(default)"
@@ -621,7 +632,10 @@ func (s ModelConfigService) RenderModelConfigCard(result codexrpc.ModelListResul
 
 // UpdateGlobalModelConfig persists a Codex config mutation.
 func (s ModelConfigService) UpdateGlobalModelConfig(mutate func(*config.CodexConfig), result codexrpc.ModelListResult) error {
-	cfg := s.GetConfig()
+	if s.UpdateCodexConfig != nil {
+		return s.UpdateCodexConfig(mutate, result)
+	}
+	cfg := s.codexConfig()
 	if cfg == nil {
 		return fmt.Errorf("nil config")
 	}
@@ -648,7 +662,7 @@ func (s ModelConfigService) UpdateGlobalModelConfig(mutate func(*config.CodexCon
 }
 
 func (s ModelConfigService) fetchPlanPresetForRender(ctx context.Context) *codexrpc.CollaborationModeMask {
-	cfg := s.GetConfig()
+	cfg := s.codexConfig()
 	if cfg == nil || !cfg.Codex.ExperimentalAPI {
 		return nil
 	}
@@ -700,7 +714,7 @@ func (s ModelConfigService) CompleteCodexPlanReasoningEffortSet(action *feishu.C
 	if err != nil {
 		return &callback.CardActionTriggerResponse{Toast: &callback.Toast{Type: "error", Content: err.Error()}}, nil
 	}
-	selectedPlanModel, _ := EffectivePlanConfiguredModelAndEffort(s.GetConfig(), result, nil)
+	selectedPlanModel, _ := EffectivePlanConfiguredModelAndEffort(s.codexConfig(), result, nil)
 	reasoningEffort = strings.TrimSpace(reasoningEffort)
 	if reasoningEffort != "" && !ModelSupportsEffort(selectedPlanModel, reasoningEffort) {
 		return &callback.CardActionTriggerResponse{Toast: &callback.Toast{Type: "warning", Content: "Plan 模式模型不支持这个推理强度"}}, nil

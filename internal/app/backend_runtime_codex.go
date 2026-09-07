@@ -58,7 +58,10 @@ func (codexRuntimeFacade) buildRuntime(a *App) *backendRuntimeHandle {
 	if a == nil {
 		return &backendRuntimeHandle{backend: backendCodex}
 	}
-	client := newCodexClient(a.cfg.Codex)
+	codexCfg := a.cfg.Codex
+	codexCfg.Profile = strings.TrimSpace(a.codexProfile)
+	codexCfg.Home = strings.TrimSpace(a.codexHome)
+	client := newCodexClient(codexCfg)
 	configureCodexClientRuntime(a, client)
 	return &backendRuntimeHandle{
 		backend: backendCodex,
