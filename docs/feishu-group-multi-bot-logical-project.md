@@ -103,6 +103,7 @@ Conversation 统一拥有消息归一化、submission queue、pending queue、wo
 - 当前只支持从 GitHub 线上 snapshot v6 直接升级到包含 `GroupPrimary` 的当前状态；测试环境中间版本不保留兼容迁移。
 - 不引入公共存储；不同机器之间只依赖同一条群消息投递到各自 bot 后，各自更新本地 owner 副本。不同机器上的 owner 副本可能短暂不一致，最终以最近一次各实例实际收到并处理的 `@Bot /primary on` 为准。
 - 同一 Feidex 实例内的多个 frontend 共享同一份群 owner 副本；非 primary frontend 过滤掉未 `@` 消息，不会影响 primary frontend 自己的 adapter 处理同一条消息。
+- 群 primary 自动初始化只在共享记录仍不存在时原子写入；查询 `bot_count` 期间若其他 frontend 已初始化或完成手动切换，迟到的查询结果沿用已有记录，不能清空或覆盖 owner。
 - 只发送空正文 `@Bot` 不作为 `/primary on` 语法糖；切换 primary 必须显式发送 `@Bot /primary on`。
 
 ### 2.5 BotProfile

@@ -680,6 +680,28 @@ func (s *Store) UpsertGroupPrimary(primary *GroupPrimary) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.upsertGroupPrimaryLocked(primary)
+}
+
+// EnsureGroupPrimary creates a group's initial owner record only if it is still
+// absent. A concurrent explicit owner assignment always takes precedence.
+func (s *Store) EnsureGroupPrimary(primary *GroupPrimary) (*GroupPrimary, error) {
+	cp := cloneGroupPrimary(primary)
+	if cp == nil || cp.ID == "" {
+		return nil, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if previous := s.data.GroupPrimaries[cp.ID]; previous != nil {
+		return cloneGroupPrimary(previous), nil
+	}
+	if err := s.upsertGroupPrimaryLocked(cp); err != nil {
+		return nil, err
+	}
+	return cloneGroupPrimary(s.data.GroupPrimaries[cp.ID]), nil
+}
+
+func (s *Store) upsertGroupPrimaryLocked(primary *GroupPrimary) error {
 	cp := cloneGroupPrimary(primary)
 	if cp == nil || cp.ID == "" {
 		return nil

@@ -81,7 +81,14 @@ func ensureGroupPrimaryInitialized(ctx context.Context, a *App, chatType, chatID
 			return nil, fmt.Errorf("bot open_id is required to initialize group primary")
 		}
 	}
-	return setGroupPrimaryOwner(a, chatType, chatID, ownerBotOpenID)
+	// The group lookup can finish after another frontend has initialized the
+	// group or processed /primary on. Check and insert under the shared store
+	// lock so a late probe cannot reset that owner (including to an empty one).
+	return a.State().EnsureGroupPrimary(&state.GroupPrimary{
+		ChatID:         chatID,
+		ChatType:       chatType,
+		OwnerBotOpenID: ownerBotOpenID,
+	})
 }
 
 func groupPrimaryForChat(a *App, chatType, chatID string) *state.GroupPrimary {

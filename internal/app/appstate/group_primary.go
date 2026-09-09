@@ -31,11 +31,16 @@ func (s *Store) SaveGroupPrimary(primary *state.GroupPrimary) error {
 	if s == nil || s.Store == nil {
 		return nil
 	}
-	if primary != nil && strings.TrimSpace(primary.ID) == "" {
-		primary = cloneGroupPrimaryForSave(primary)
-		primary.ID = DefaultGroupPrimaryID(s.FrontendID, primary.ChatType, primary.ChatID)
+	return s.Store.UpsertGroupPrimary(s.groupPrimaryForSave(primary))
+}
+
+// EnsureGroupPrimary initializes a group's shared owner without overwriting an
+// existing record from another frontend or an explicit primary command.
+func (s *Store) EnsureGroupPrimary(primary *state.GroupPrimary) (*state.GroupPrimary, error) {
+	if s == nil || s.Store == nil {
+		return nil, nil
 	}
-	return s.Store.UpsertGroupPrimary(primary)
+	return s.Store.EnsureGroupPrimary(s.groupPrimaryForSave(primary))
 }
 
 // DefaultGroupPrimaryID is the stable state key for one group chat.
@@ -44,11 +49,14 @@ func DefaultGroupPrimaryID(frontendID, chatType, chatID string) string {
 	return "primary_" + sanitizeGroupPrimaryIDPart(chatType) + "_" + sanitizeGroupPrimaryIDPart(chatID)
 }
 
-func cloneGroupPrimaryForSave(primary *state.GroupPrimary) *state.GroupPrimary {
+func (s *Store) groupPrimaryForSave(primary *state.GroupPrimary) *state.GroupPrimary {
 	if primary == nil {
 		return nil
 	}
 	cp := *primary
+	if strings.TrimSpace(cp.ID) == "" {
+		cp.ID = DefaultGroupPrimaryID(s.FrontendID, cp.ChatType, cp.ChatID)
+	}
 	return &cp
 }
 

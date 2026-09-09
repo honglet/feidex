@@ -40,3 +40,45 @@ func TestGroupPrimaryPersistScopeAndClone(t *testing.T) {
 		t.Fatalf("GroupPrimariesByChat() = %+v, want one owner", got)
 	}
 }
+
+func TestEnsureGroupPrimaryPreservesExistingStateAndPersists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := &GroupPrimary{ID: " primary-group ", ChatType: " GROUP ", ChatID: " chat-1 "}
+	created, err := store.EnsureGroupPrimary(initial)
+	if err != nil || created == nil || created.ID != "primary-group" || created.OwnerBotOpenID != "" {
+		t.Fatalf("EnsureGroupPrimary(initial) = %+v, %v", created, err)
+	}
+	if initial.ID != " primary-group " || initial.ChatType != " GROUP " || initial.ChatID != " chat-1 " {
+		t.Fatalf("EnsureGroupPrimary mutated its input: %+v", initial)
+	}
+	stale := *created
+	stale.OwnerBotOpenID = "bot-a"
+	if got, err := store.EnsureGroupPrimary(&stale); err != nil || got == nil || *got != *created {
+		t.Fatalf("EnsureGroupPrimary overwrote initialized empty owner: %+v, %v", got, err)
+	}
+	manual := *created
+	manual.OwnerBotOpenID = "bot-b"
+	if err := store.UpsertGroupPrimary(&manual); err != nil {
+		t.Fatal(err)
+	}
+	expected := store.GetGroupPrimary(created.ID)
+	got, err := store.EnsureGroupPrimary(&stale)
+	if err != nil || got == nil || *got != *expected {
+		t.Fatalf("EnsureGroupPrimary overwrote explicit owner: %+v, %v; want %+v", got, err, expected)
+	}
+	got.OwnerBotOpenID = "mutated"
+	if again := store.GetGroupPrimary(created.ID); again == nil || *again != *expected {
+		t.Fatalf("EnsureGroupPrimary returned shared state: %+v", again)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted := reopened.GetGroupPrimary(created.ID); persisted == nil || *persisted != *expected {
+		t.Fatalf("persisted primary = %+v, want %+v", persisted, expected)
+	}
+}
