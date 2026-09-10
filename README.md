@@ -19,7 +19,7 @@
 - **飞书接入** —— 单聊 / 群聊（可配置仅 `@bot` 响应）、回复树内会话连续性，单进程可接多个 bot；也支持 Lark 国际版（`domain` 切换）
 - **双后端** —— Codex（thread/turn）与 Claude（session/conversation）并存，`/backend` 在线切换无需重启
 - **会话与队列** —— 新消息排队、回复消息 steer 到当前 turn、失败自动回退、暂存附件、auto-retry
-- **审批与表单** —— 命令 / 文件变更 / 权限审批，`request_user_input` 表单与手机友好的 quick-card
+- **审批与表单** —— 命令 / 文件变更 / 权限审批，同步与异步问题表单、手机友好的 quick-card；异步问题在任务继续运行时独立保留
 - **工作区管理** —— 多 workspace，支持克隆 / worktree / 删除 / 切换，群聊里每个 bot 在每个群可绑定不同工作区
 - **Code Review / 技能**（Codex only）—— `/review` 多范围审查、`/skills` 技能调用
 - **可观测性** —— token usage / context left、运行时日志级别切换与查看、飞书权限问题卡片化提示

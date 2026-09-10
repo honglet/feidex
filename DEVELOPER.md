@@ -289,6 +289,7 @@ Guidance:
 - When introducing a new item type, update normalization, rendering, quiet-mode handling, and tests together.
 - For server-request-backed approvals or forms, a local reply is not the terminal boundary. Treat `serverRequest/resolved` as the only authoritative resume and cleanup point.
 - Treat server-request cards such as approvals, tool user input, and elicitation as substantive turn content. They must stay in the same Feishu reply context as the turn when possible, and final output must not be patched backward over them.
+- Codex async questions arrive as `agentMessage` items with `delivery=async` and `questions`, even when `phase=final_answer`. Normalize them as user input, never as final output or a completion fallback. Their local forms remain answerable after the producing turn completes; answers use ordinary conversation continuation, not JSON-RPC server-request replies, and must stay in the same frontend and thread.
 - For inline review, keep the `review/start` response turn id as the primary binding. A later `turn/started.turn.id` may differ and must not steal ownership.
 - `item/started` may arrive before `turn/started` for review and approval flows. Preserve early-binding logic unless the protocol contract itself changes.
 
@@ -387,7 +388,7 @@ Implementation rule:
 When a change touches one of these contracts, prefer updating the existing guard tests instead of relying only on broad `go test ./...` coverage:
 
 - Turn, thread, and submission lifecycle: `internal/app/critical_paths_test.go`, `internal/app/critical_paths_more_test.go`, `internal/app/state_machine_contracts_test.go`, `internal/app/protocol_business_logic_test.go`
-- Server requests, approvals, tool user input, and elicitation: `internal/app/item_started_server_request_test.go`, `internal/app/notifications_branches_more_test.go`, `internal/app/critical_paths_more_test.go`, `internal/app/app_more_test.go`, `internal/app/quiet_working_card_test.go`
+- Server requests, approvals, tool user input, and elicitation: `internal/app/item_started_server_request_test.go`, `internal/app/notifications_branches_more_test.go`, `internal/app/critical_paths_more_test.go`, `internal/app/app_more_test.go`, `internal/app/quiet_working_card_test.go`, `internal/app/async_user_input_test.go`
 - Review lifecycle and target mapping: `internal/app/review_critical_test.go`, `internal/app/review_test.go`, plus the live review tests under `internal/codexrpc`
 - Workspace new, clone, and path picker flows: `internal/app/path_picker_test.go`, `internal/app/actions_dispatch_more_test.go`, `internal/app/app_more_test.go`
 - Upgrade and backend maintenance: `internal/app/upgrade_isolation_test.go`, `internal/app/upgrade_more_test.go`, `internal/app/codex_upgrade_test.go`, `internal/app/claude_upgrade_test.go`

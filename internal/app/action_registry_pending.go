@@ -7,6 +7,12 @@ import (
 )
 
 var pendingCardActionHandlers = map[string]cardActionHandler{
+	"async_user_input.answer": func(s cardActionService, action *feishu.CardAction) (*callback.CardActionTriggerResponse, error) {
+		return completeAsyncUserInput(s.app, action, false)
+	},
+	"async_user_input.cancel": func(s cardActionService, action *feishu.CardAction) (*callback.CardActionTriggerResponse, error) {
+		return completeAsyncUserInput(s.app, action, true)
+	},
 	"user_input.answer": func(s cardActionService, action *feishu.CardAction) (*callback.CardActionTriggerResponse, error) {
 		return s.app.ServerRequestService().CompleteUserInputAnswer(action)
 	},

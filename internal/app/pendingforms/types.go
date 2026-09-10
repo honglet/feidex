@@ -4,6 +4,10 @@ package pendingforms
 
 import "strings"
 
+// AsyncUserInputPendingKind identifies local forms whose answers are ordinary
+// conversation input and whose lifetime can extend beyond the producing turn.
+const AsyncUserInputPendingKind = "async_user_input"
+
 // ToolUserInputOption represents a single option in a user input question.
 type ToolUserInputOption struct {
 	Label       string `json:"label"`

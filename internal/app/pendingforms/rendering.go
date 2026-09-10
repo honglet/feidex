@@ -68,10 +68,56 @@ func RenderToolUserInputQuickBody(q ToolUserInputQuestion) string {
 // RenderToolUserInputFormCard builds a Feishu card containing a form for tool
 // user input questions. attentionUserID is the Feishu user to @-mention.
 func RenderToolUserInputFormCard(requestID string, payload ToolUserInputPayload, drafts FormDrafts, attentionUserID string) map[string]any {
+	return renderUserInputFormCard(requestID, payload, drafts, attentionUserID, "user_input.answer", "pending_form.cancel", "")
+}
+
+// RenderAsyncUserInputFormCard keeps optional questions available while the
+// agent continues working. Its actions submit ordinary conversation input.
+func RenderAsyncUserInputFormCard(requestID string, payload ToolUserInputPayload, drafts FormDrafts, attentionUserID string) map[string]any {
+	return renderUserInputFormCard(requestID, payload, drafts, attentionUserID, "async_user_input.answer", "async_user_input.cancel", "你可以选择选项或填写答案后提交；回答期间任务会继续进行。\n\n")
+}
+
+// AsyncUserInputAnswerText formats ordinary conversation input with the
+// original questions. Free text overrides a selected option and stays intact.
+func AsyncUserInputAnswerText(payload ToolUserInputPayload, drafts FormDrafts) (string, error) {
+	if len(payload.Questions) == 0 {
+		return "", fmt.Errorf("没有可回答的问题")
+	}
+	lines := []string{"对之前问题的回答："}
+	for _, q := range payload.Questions {
+		raw := ToolUserInputDraftValue(drafts, q.ID)
+		if other := ToolUserInputDraftValue(drafts, ToolUserInputOtherFieldName(q)); q.IsOther && strings.TrimSpace(other) != "" {
+			raw = other
+			q.Options = nil
+		}
+		if len(q.Options) > 0 && strings.TrimSpace(raw) != "" {
+			matched := false
+			for _, option := range q.Options {
+				if strings.EqualFold(strings.TrimSpace(raw), strings.TrimSpace(option.Label)) {
+					raw, matched = option.Label, true
+					break
+				}
+			}
+			if !matched {
+				return "", fmt.Errorf("%s: 请选择选项或填写其它答案", q.Question)
+			}
+			q.Options = nil // A single option label may itself contain commas.
+		}
+		q.IsOther = false
+		answers, err := ParseQuestionAnswers(raw, q)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", q.Question, err)
+		}
+		lines = append(lines, "", "问题："+q.Question, "回答："+strings.Join(answers, "\n"))
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+func renderUserInputFormCard(requestID string, payload ToolUserInputPayload, drafts FormDrafts, attentionUserID, submitAction, cancelAction, intro string) map[string]any {
 	card := appcards.NewMarkdownBodyCard("需要补充输入", "orange")
 	appcards.AppendMarkdownBodyCardElement(card, map[string]any{
 		"tag":     "markdown",
-		"content": apputil.PrependAttentionMentionMarkdown(RenderToolUserInputBody(payload), attentionUserID),
+		"content": apputil.PrependAttentionMentionMarkdown(intro+RenderToolUserInputBody(payload), attentionUserID),
 	})
 	formElements := make([]map[string]any, 0, len(payload.Questions)+4)
 	for _, q := range payload.Questions {
@@ -85,7 +131,7 @@ func RenderToolUserInputFormCard(requestID string, payload ToolUserInputPayload,
 			Type: "primary",
 			Name: "user_input_submit",
 			Value: map[string]any{
-				"action":       "user_input.answer",
+				"action":       submitAction,
 				"request_id":   strings.TrimSpace(requestID),
 				"multi_drafts": ToolUserInputMultiDraftActionValue(drafts.Multi),
 			},
@@ -94,7 +140,7 @@ func RenderToolUserInputFormCard(requestID string, payload ToolUserInputPayload,
 			Text:  "取消",
 			Type:  "default",
 			Name:  "user_input_cancel",
-			Value: map[string]any{"action": "pending_form.cancel", "request_id": strings.TrimSpace(requestID)},
+			Value: map[string]any{"action": cancelAction, "request_id": strings.TrimSpace(requestID)},
 		},
 	})
 	for idx, row := range buttonRows {

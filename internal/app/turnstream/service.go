@@ -355,7 +355,13 @@ func (svc Service) CompleteTurnItemWithResult(ctx context.Context, threadID, tur
 			}
 		}
 	}
-	if hasPayload {
+	if hasPayload && payload.ItemType == "user_input" {
+		// Keep questions in place, including when a later final arrives or
+		// completion would otherwise promote the preceding commentary.
+		stream.FinalMessageID = ""
+		stream.FinalCandidate = turnitem.CardPayload{}
+		stream.FinalCandidateMessageID = ""
+	} else if hasPayload {
 		switch normalizeTurnItemType(firstNonEmpty(payload.ProtocolItemType, payload.ItemType)) {
 		case "exited_review_mode":
 			if payload.IsFinalAnswer {

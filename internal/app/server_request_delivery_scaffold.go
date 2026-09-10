@@ -21,6 +21,8 @@ type pendingCardDelivery struct {
 	ownerUserID     string
 	payloadJSON     string
 	waitingStatus   string
+	nonBlocking     bool
+	reuseMessageID  string
 	linkKind        string
 	ttl             time.Duration
 }
@@ -34,7 +36,7 @@ func deliverPendingCard(a *App, sub *state.Submission, card map[string]any, deli
 		return fmt.Errorf("missing request id")
 	}
 	waitingStatus := strings.TrimSpace(delivery.waitingStatus)
-	if waitingStatus == "" {
+	if waitingStatus == "" && !delivery.nonBlocking {
 		return fmt.Errorf("missing waiting status")
 	}
 	linkKind := strings.TrimSpace(delivery.linkKind)
@@ -48,7 +50,11 @@ func deliverPendingCard(a *App, sub *state.Submission, card map[string]any, deli
 	ctx := context.Background()
 	msgID := ""
 	var err error
-	if reuseMessageID := newTurnStreamService(a).takeReasoningOnlyWorkingMessageID(delivery.turnID); reuseMessageID != "" {
+	reuseMessageID := strings.TrimSpace(delivery.reuseMessageID)
+	if reuseMessageID == "" {
+		reuseMessageID = newTurnStreamService(a).takeReasoningOnlyWorkingMessageID(delivery.turnID)
+	}
+	if reuseMessageID != "" {
 		if patchErr := a.feishu.PatchCard(ctx, reuseMessageID, card); patchErr == nil {
 			msgID = reuseMessageID
 		}
@@ -67,7 +73,7 @@ func deliverPendingCard(a *App, sub *state.Submission, card map[string]any, deli
 	now := time.Now()
 	newTurnStreamService(a).markSubstantiveOutputAfterWorking(delivery.turnID)
 	recordMessageLink(a, msgID, linkKind, sub, requestKey)
-	_ = a.State().SavePending(&state.PendingRequest{
+	if err := a.State().SavePending(&state.PendingRequest{
 		ID:           requestKey,
 		RequestIDRaw: strings.TrimSpace(delivery.requestIDStored),
 		Backend:      normalizeRuntimeBackend(delivery.backend),
@@ -82,7 +88,11 @@ func deliverPendingCard(a *App, sub *state.Submission, card map[string]any, deli
 		Status:       state.PendingRequestStatusPending.String(),
 		CreatedAt:    now.Unix(),
 		ExpiresAt:    now.Add(ttl).Unix(),
-	})
-	_ = a.State().SetSubmissionStatus(sub.ID, waitingStatus)
+	}); err != nil {
+		return err
+	}
+	if waitingStatus != "" {
+		return a.State().SetSubmissionStatus(sub.ID, waitingStatus)
+	}
 	return nil
 }

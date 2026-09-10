@@ -89,6 +89,9 @@ func ShouldDeliverTurnKind(mode config.QuietMode, kind string) bool {
 }
 
 func ShouldDeliverTurnItem(mode config.QuietMode, itemType string, isFinalAnswer bool) bool {
+	if turnitem.NormalizeTurnItemType(itemType) == "user_input" {
+		return true
+	}
 	switch mode {
 	case config.QuietModeProgress, config.QuietModeNormal:
 		switch turnitem.NormalizeTurnItemType(itemType) {

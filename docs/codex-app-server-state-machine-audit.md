@@ -1,6 +1,6 @@
 # Codex App Server 状态机审计
 
-审计时间: 2026-07-10
+审计时间: 2026-09-10
 
 官方来源:
 - `https://developers.openai.com/codex/app-server`
@@ -82,6 +82,7 @@
 | `SM-23` | `McpElicitationRequest` |
 | `SM-24` | `SkillsCatalogLifecycle` |
 | `SM-25` | `ThreadGoalLifecycle` |
+| `SM-26` | `AsyncUserInput` |
 
 ## 状态机到测试映射
 
@@ -100,6 +101,7 @@
 | `SM-09` | command approval 必须等待 `serverRequest/resolved` 才恢复 submission | `internal/app/critical_paths_test.go`、`internal/app/item_started_server_request_test.go`、`internal/app/protocol_business_logic_test.go`、`internal/app/quiet_working_card_test.go`、`internal/codexrpc/integration_live_state_machine_test.go` |
 | `SM-10` | file approval 必须把 started item 上下文和 request payload 合并 | `internal/app/item_started_server_request_test.go`、`internal/app/app_more_test.go`、`internal/app/protocol_business_logic_test.go`、`internal/codexrpc/integration_live_state_machine_test.go` |
 | `SM-11` | tool user input 的 reply / resolve / resume 边界不能错 | `internal/app/critical_paths_more_test.go` |
+| `SM-26` | async question 不得当 final；独立问题卡、非阻塞回调、同 thread 答案回传及 turn 完成后保留 | `internal/app/async_user_input_test.go`、`internal/app/turnitem/payload_test.go` |
 | `SM-13` | dynamic tool call 当前必须显式拒绝，不能半接入半放行 | `internal/app/state_machine_contracts_test.go`、`internal/app/app_more_test.go` |
 | `SM-14` | `review/start` payload、review item 生命周期、final 渲染、持久化历史 | `internal/app/review_critical_test.go`、`internal/app/review_test.go`、`internal/app/protocol_business_logic_test.go`、`internal/codexrpc/integration_live_review_test.go` |
 | `SM-22` | permissions approval 的 payload、reply、resolved 恢复契约 | `internal/app/state_machine_contracts_test.go`、`internal/app/notifications_branches_more_test.go`、`internal/app/app_more_test.go` |
@@ -197,6 +199,7 @@
   - 当前产品以 started/completed 为唯一 item 消费边界，因此 `item(type=plan)` 只消费最终 completed item，不消费 `item/plan/delta`。
   - `turn/plan/updated` 仍然保留，但它只是 checklist 展示通道；不要把它和 `/plan` collaboration mode 或 `item(type=plan)` 混为一谈。
   - 主协议边界仍然是 `turn/completed`；`thread/read` 对账只用于 missed notification 后的本地恢复，不把 final item 本身当作终态。
+  - `agentMessage` 的 `delivery=async` 优先于 `phase=final_answer`：它表示异步问题（见 `SM-26`），不得设置 `SentFinal`、注册最终卡片或成为 completion 的 final candidate。
   - Quiet Mode 的 `工作中` 卡复用是展示层优化，不改变 turn/item/server request 的协议顺序；不得为了减少消息数而把后发生的 final output patch 到审批等实质内容之前的消息位置。
 - 修改建议:
   - 保持现状即可；如果后续仍有其他明确不用消费的流式通知，也可继续加入 opt-out。
@@ -327,6 +330,7 @@
 ### SM-11 `ToolRequestUserInput`
 
 - 结论: `严格遵循`
+- 本节只描述 `item/tool/requestUserInput` server request。`request_user_input_async` 的 item 通知流程见 `SM-26`，不共享 reply/resolved/resume 状态机。
 - OpenAI 原始要求:
   - 官方页面原文: `EXPERIMENTAL - Request input from the user for a tool call.`
   - 官方页面原文: `tool/requestUserInput - prompt the user with 1-3 short questions for a tool call`
@@ -629,3 +633,26 @@
   - goal tracker 是进程内缓存；重启后只有用户再次 `/goal` 或收到 goal 通知才会恢复 active goal 观察。
 - 修改建议:
   - 保持 v1 实现即可；若后续需要跨重启自动接管 active goal continuation，应把 goal tracker 持久化或在启动/resume 时对活跃 thread 执行 `thread/goal/get`。
+
+### SM-26 `AsyncUserInput`
+
+- 结论: `兼容实现`
+- 本地 Codex 原始要求:
+  - Codex CLI 0.153.4 的 `request_user_input_async` 立即返回 `accepted=true`，允许同一 turn 继续运行。
+  - 通知中的 `agentMessage` 带 `delivery=async`、`questions: [{title, options?: string[] | null}]`，并可能同时带 `phase=final_answer`。
+  - 它不是 `item/tool/requestUserInput` server request，不存在对应 JSON-RPC request ID 或 `serverRequest/resolved` 等待边界。
+  - 协议节点: `item/completed(agentMessage, delivery=async) -> turn 继续运行 -> 用户通过普通对话输入回答`；回答可以晚于产生问题的 `turn/completed`。
+  - 来源: 本地 `codex app-server generate-json-schema --experimental` 生成的 `tmp/appserver-schema/v2/ItemCompletedNotification.json`（`AgentMessageDelivery`、`AsyncUserInputQuestion`），以及 2026-09-10 的实际 rollout item 记录。
+- 我们当前实现:
+  - `internal/app/turnitem/payload.go` 将 async agentMessage 归一化为 `user_input`，保留单选选项和自由文本入口；无结构化 questions 的 async 文本仍按非 final 内容展示。
+  - `internal/app/turnstream/service.go` 排除 async question 的 final 标志及 final candidate，并清除跨过问题卡的旧 final 复用目标。
+  - `internal/app/async_user_input.go` 复用现有 pending form 和卡片投递助手，在所有 quiet 模式下发送独立输入卡；仅 reasoning-only 工作占位卡允许被复用。
+  - 本地 pending kind 为 `async_user_input`；展示不把 submission 切到 `waiting_user_input`，回答不调用 server-request reply/resolved/resume。
+  - 回调只做校验及原子认领，立即返回 toast；后台回传含原问题的答案：当前 thread 有 active turn 时通过现有 continuation adapter 使用 `turn/steer(expectedTurnId)`，空闲时沿用 submission queue 在同一 thread 发起下一轮。
+  - 仅后端接受答案后将本地表单标记 resolved；失败保留答案草稿供重试；重复提交、错误用户及切换到其他 thread/backend 的提交会被拒绝。取消只关闭问题，不中断 turn。
+  - turn cleanup 保留未回答或提交中的 async 表单及其消息关联，不保留已完成 submission 的运行状态；原有 server request 清理边界不变。
+- 差异点:
+  - pending 表单为进程内状态，重启后失效，沿用既有表单约定。
+  - 当前交互以卡片表单提交为准；普通文字消息继续走既有对话输入路径。
+- 修改建议:
+  - 后续协议增加专门的 async answer 方法时，应在 backend adapter 更新答案回传方式，不能伪造 JSON-RPC server-request response。

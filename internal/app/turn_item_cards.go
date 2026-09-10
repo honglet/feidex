@@ -44,6 +44,9 @@ func (s outboundCardService) sendTurnItemCardWithReuse(ctx context.Context, sub 
 	if quietModeEnabled(feishuConfig(s.app)) && !shouldDeliverTurnItemPayloadInQuiet(quietMode(feishuConfig(s.app)), payload) {
 		return ""
 	}
+	if payload.ItemType == "user_input" && payload.UserInput != nil {
+		return sendAsyncUserInputCard(s.app, sub, *payload.UserInput, reuseMessageID)
+	}
 	kind := turnItemEventKind(payload.ItemType)
 	footerLines := []string(nil)
 	if payload.IsFinalAnswer {
