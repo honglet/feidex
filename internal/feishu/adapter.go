@@ -44,8 +44,28 @@ type InboundMessage struct {
 	Attachments            []Attachment
 	MergeForwardMessageIDs []string
 	ExpandedMergeForward   bool
+	MentionedOpenIDs       []string
+	MentionedAny           bool
+	MentionedSelf          bool
 	CreatedAt              int64
 }
+
+// GroupMessagePolicyInput is the app-level context used to decide whether a
+// group message should be delivered to this local bot. It carries only
+// lightweight message metadata and raw text.
+type GroupMessagePolicyInput struct {
+	ChatID           string
+	RootMessageID    string
+	ParentMessageID  string
+	Text             string
+	MentionedOpenIDs []string
+	MentionedAny     bool
+	MentionedSelf    bool
+}
+
+// GroupMessagePolicy decides whether a group message should be delivered to
+// this local bot.
+type GroupMessagePolicy func(GroupMessagePolicyInput) bool
 
 type MessageRecall struct {
 	MessageID string
@@ -84,28 +104,39 @@ type BotMenuClick struct {
 	Command  string
 }
 
+type BotGroupEvent struct {
+	ChatID   string
+	ChatName string
+}
+
 type Adapter struct {
-	cfg           config.FeishuConfig
-	clientMu      sync.RWMutex
-	client        *lark.Client
-	clientFactory func() *lark.Client
-	wsClient      *wsClientState
-	botOpenID     string
-	cancel        context.CancelFunc
-	allowSet      map[string]struct{}
-	allowAll      bool
-	startOnce     sync.Once
-	seenMu        sync.Mutex
-	seen          map[string]time.Time
-	paceMu        sync.Mutex
-	createPacer   *requestPacer
-	patchPacer    *keyedRequestPacer
-	reactionMu    sync.Mutex
-	reactions     map[string]string
+	cfg                config.FeishuConfig
+	clientMu           sync.RWMutex
+	client             *lark.Client
+	clientFactory      func() *lark.Client
+	wsClient           *wsClientState
+	botProfileMu       sync.Mutex
+	botProfileLastTry  time.Time
+	botOpenID          string
+	botName            string
+	groupMessagePolicy GroupMessagePolicy
+	cancel             context.CancelFunc
+	allowSet           map[string]struct{}
+	allowAll           bool
+	startOnce          sync.Once
+	seenMu             sync.Mutex
+	seen               map[string]time.Time
+	paceMu             sync.Mutex
+	createPacer        *requestPacer
+	patchPacer         *keyedRequestPacer
+	announcementPacer  *requestPacer
+	reactionMu         sync.Mutex
+	reactions          map[string]string
 
 	onMessage    func(*InboundMessage)
 	onCardAction func(*CardAction) (*callback.CardActionTriggerResponse, error)
 	onBotMenu    func(*BotMenuClick)
+	onBotAdded   func(*BotGroupEvent)
 	onRecall     func(*MessageRecall)
 	onReaction   func(*MessageReaction)
 
@@ -189,9 +220,92 @@ func (a *Adapter) SetHandlers(onMessage func(*InboundMessage), onCardAction func
 	a.onReaction = onReaction
 }
 
+// SetGroupMessagePolicy installs the optional app-level group trigger filter.
+func (a *Adapter) SetGroupMessagePolicy(policy GroupMessagePolicy) {
+	if a == nil {
+		return
+	}
+	a.groupMessagePolicy = policy
+}
+
+// BotOpenID returns this app bot's OpenID once it has been discovered during startup.
+func (a *Adapter) BotOpenID() string {
+	if a == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.ensureBotProfile("bot_open_id").OpenID)
+}
+
+// BotName returns this app bot's Feishu display name once discovered during startup.
+func (a *Adapter) BotName() string {
+	if a == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.ensureBotProfile("bot_name").Name)
+}
+
+func (a *Adapter) ensureBotProfile(reason string) botProfile {
+	if a == nil {
+		return botProfile{}
+	}
+	profile, shouldFetch := a.cachedBotProfileForFetch()
+	if !shouldFetch {
+		return profile
+	}
+	fetched := a.fetchBotProfile()
+	profile = a.storeBotProfile(fetched)
+	if profile.OpenID == "" || profile.Name == "" {
+		slog.Warn("feishu bot profile incomplete",
+			"reason", strings.TrimSpace(reason),
+			"has_open_id", profile.OpenID != "",
+			"has_name", profile.Name != "",
+		)
+	}
+	return profile
+}
+
+func (a *Adapter) cachedBotProfileForFetch() (botProfile, bool) {
+	a.botProfileMu.Lock()
+	defer a.botProfileMu.Unlock()
+	profile := botProfile{
+		OpenID: strings.TrimSpace(a.botOpenID),
+		Name:   strings.TrimSpace(a.botName),
+	}
+	if profile.OpenID != "" && profile.Name != "" {
+		return profile, false
+	}
+	if !a.botProfileLastTry.IsZero() && time.Since(a.botProfileLastTry) < 30*time.Second {
+		return profile, false
+	}
+	a.botProfileLastTry = time.Now()
+	return profile, true
+}
+
+func (a *Adapter) storeBotProfile(profile botProfile) botProfile {
+	a.botProfileMu.Lock()
+	defer a.botProfileMu.Unlock()
+	if strings.TrimSpace(profile.OpenID) != "" {
+		a.botOpenID = strings.TrimSpace(profile.OpenID)
+	}
+	if strings.TrimSpace(profile.Name) != "" {
+		a.botName = strings.TrimSpace(profile.Name)
+	}
+	return botProfile{
+		OpenID: strings.TrimSpace(a.botOpenID),
+		Name:   strings.TrimSpace(a.botName),
+	}
+}
+
+func (a *Adapter) SetBotGroupAddedHandler(handler func(*BotGroupEvent)) {
+	if a == nil {
+		return
+	}
+	a.onBotAdded = handler
+}
+
 func (a *Adapter) Start(ctx context.Context) error {
 	a.startOnce.Do(func() {
-		a.botOpenID = a.fetchBotOpenID()
+		a.ensureBotProfile("startup")
 		dispatcher := dispatcher.NewEventDispatcher("", "").
 			OnP2MessageReceiveV1(func(ctx context.Context, event *larkim.P2MessageReceiveV1) error {
 				if a.onMessage != nil {
@@ -248,6 +362,17 @@ func (a *Adapter) Start(ctx context.Context) error {
 				}
 				go a.onBotMenu(&BotMenuClick{UserID: userID, Command: cmd})
 				return nil
+			}).
+			OnP2ChatMemberBotAddedV1(func(ctx context.Context, event *larkim.P2ChatMemberBotAddedV1) error {
+				if a.onBotAdded == nil || event == nil || event.Event == nil || event.Event.ChatId == nil {
+					return nil
+				}
+				chatName := ""
+				if event.Event.Name != nil {
+					chatName = *event.Event.Name
+				}
+				go a.onBotAdded(&BotGroupEvent{ChatID: *event.Event.ChatId, ChatName: chatName})
+				return nil
 			})
 		a.wsDispatcher = dispatcher
 		a.wsFragments = larkcache.New(30 * time.Second)
@@ -296,7 +421,7 @@ func (a *Adapter) fetchWSEndpointURL(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, config.FeishuOpenBaseURLForConfig(a.cfg)+larkws.GenEndpointUri, bytes.NewBuffer(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.cfg.OpenBaseURL()+larkws.GenEndpointUri, bytes.NewBuffer(body))
 	if err != nil {
 		return "", err
 	}
@@ -707,6 +832,36 @@ func (a *Adapter) SendCard(ctx context.Context, chatID string, card map[string]a
 	return *resp.Data.MessageId, nil
 }
 
+func (a *Adapter) GetGroupBotCount(ctx context.Context, chatID string) (int, error) {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return 0, fmt.Errorf("chat_id is required")
+	}
+	req := larkim.NewGetChatReqBuilder().ChatId(chatID).Build()
+	resp, err := withFeishuTenantTokenRefreshRetry(ctx, a, "im.chat.get", func(client *lark.Client) (*larkim.GetChatResp, error) {
+		return client.Im.Chat.Get(ctx, req)
+	})
+	if err != nil {
+		logFeishuFailure("feishu get chat failed", err, 0, "", "op", "get_chat", "chat_id", chatID)
+		return 0, wrapPermissionIssue(err, permissionIssueFromDirectError("im.chat.get", err))
+	}
+	if !resp.Success() {
+		logFeishuFailure("feishu get chat failed", nil, resp.Code, resp.Msg, "op", "get_chat", "chat_id", chatID)
+		return 0, wrapPermissionIssue(
+			fmt.Errorf("feishu get chat failed code=%d msg=%s", resp.Code, resp.Msg),
+			permissionIssueFromCodeError("im.chat.get", resp.Code, resp.Msg, &resp.CodeError, resp.ApiResp, nil),
+		)
+	}
+	if resp.Data == nil || resp.Data.BotCount == nil {
+		return 0, fmt.Errorf("feishu get chat %s returned no bot_count", chatID)
+	}
+	botCount, err := strconv.Atoi(strings.TrimSpace(*resp.Data.BotCount))
+	if err != nil {
+		return 0, fmt.Errorf("invalid bot_count %q for chat %s", strings.TrimSpace(*resp.Data.BotCount), chatID)
+	}
+	return botCount, nil
+}
+
 func (a *Adapter) PatchCard(ctx context.Context, messageID string, card map[string]any) error {
 	contentBytes, _ := json.Marshal(card)
 	title, preview, buttonCount := summarizeCardForLog(card)
@@ -885,7 +1040,7 @@ func (a *Adapter) DownloadMessageResource(ctx context.Context, messageID string,
 		return "", "", fmt.Errorf("missing message id for message resource download")
 	}
 	kind := strings.TrimSpace(attachment.Kind)
-	if kind != "image" && kind != "file" && kind != "audio" {
+	if kind != "image" && kind != "file" && kind != "audio" && kind != "media" {
 		return "", "", fmt.Errorf("unsupported attachment kind %q", attachment.Kind)
 	}
 	resourceKey := strings.TrimSpace(attachment.ResourceKey)
@@ -1048,36 +1203,55 @@ func (a *Adapter) convertMessage(event *larkim.P2MessageReceiveV1) *InboundMessa
 	if !a.allowed(userID) {
 		return nil
 	}
-	if msg.ChatType != nil && *msg.ChatType == "group" && a.cfg.GroupAtOnly {
-		allowedGroupTrigger := a.cfg.RespondToAtEveryone && mentionedEveryone(msg.Mentions)
-		if a.botOpenID != "" {
-			allowedGroupTrigger = allowedGroupTrigger || mentioned(msg.Mentions, a.botOpenID)
-		}
-		if !allowedGroupTrigger {
-			return nil
+	messageID := stringValue(msg.MessageId)
+	chatID := stringValue(msg.ChatId)
+	chatType := stringValue(msg.ChatType)
+	rootMessageID := stringValue(msg.RootId)
+	parentMessageID := stringValue(msg.ParentId)
+	policyRootMessageID := groupPolicyRootMessageID(messageID, rootMessageID, parentMessageID)
+	mentionedSelf := a.botOpenID != "" && mentioned(msg.Mentions, a.botOpenID)
+	mentionedOpenIDs := mentionedOpenIDs(msg.Mentions)
+	mentionedAny := hasMentionEvents(msg.Mentions)
+	rawText := ""
+	if messageType == "text" {
+		rawText = extractText(msg.Content)
+	}
+	synthesizedPrimaryCommand := messageType == "text" && mentionOnlyPrimaryOnCommand(rawText, msg.Mentions, mentionedOpenIDs)
+	effectiveText := rawText
+	if synthesizedPrimaryCommand {
+		effectiveText = "/primary on"
+	}
+	// All group messages are converted here and, when configured, routed by the
+	// app-level policy. The adapter itself does not apply product routing rules.
+	if chatType == "group" {
+		if a.groupMessagePolicy != nil {
+			if !a.groupMessagePolicy(GroupMessagePolicyInput{
+				ChatID:           chatID,
+				RootMessageID:    policyRootMessageID,
+				ParentMessageID:  parentMessageID,
+				Text:             effectiveText,
+				MentionedOpenIDs: mentionedOpenIDs,
+				MentionedAny:     mentionedAny,
+				MentionedSelf:    mentionedSelf,
+			}) {
+				return nil
+			}
 		}
 	}
 	out := &InboundMessage{
-		UserID: userID,
-	}
-	if msg.MessageId != nil {
-		out.MessageID = *msg.MessageId
+		UserID:           userID,
+		MessageID:        messageID,
+		ChatID:           chatID,
+		ChatType:         chatType,
+		RootMessageID:    rootMessageID,
+		ParentMessageID:  parentMessageID,
+		MentionedOpenIDs: mentionedOpenIDs,
+		MentionedAny:     mentionedAny,
+		MentionedSelf:    mentionedSelf,
 	}
 	if out.MessageID != "" && a.duplicate(out.MessageID) {
 		slog.Debug("feishu duplicate message ignored", "message_id", out.MessageID)
 		return nil
-	}
-	if msg.ChatId != nil {
-		out.ChatID = *msg.ChatId
-	}
-	if msg.ChatType != nil {
-		out.ChatType = *msg.ChatType
-	}
-	if msg.RootId != nil {
-		out.RootMessageID = *msg.RootId
-	}
-	if msg.ParentId != nil {
-		out.ParentMessageID = *msg.ParentId
 	}
 	if out.RootMessageID == "" && out.MessageID != "" && out.ChatType == "group" {
 		out.RootMessageID = out.MessageID
@@ -1123,6 +1297,13 @@ func (a *Adapter) convertMessage(event *larkim.P2MessageReceiveV1) *InboundMessa
 			return nil
 		}
 		attachments = append(attachments, attachmentWithSource(attachment, out.MessageID))
+	case "media":
+		attachment, ok := extractMediaAttachment(msg.Content)
+		if !ok {
+			slog.Warn("feishu media message missing file key")
+			return nil
+		}
+		attachments = append(attachments, attachmentWithSource(attachment, out.MessageID))
 	case "merge_forward":
 		ids, ok := extractMergeForwardMessageIDs(msg.Content)
 		if !ok {
@@ -1132,12 +1313,35 @@ func (a *Adapter) convertMessage(event *larkim.P2MessageReceiveV1) *InboundMessa
 	default:
 		return nil
 	}
+	if synthesizedPrimaryCommand {
+		slog.Debug("feishu mention-only message synthesized as primary command",
+			"app_id", strings.TrimSpace(a.cfg.AppID),
+			"message_id", messageID,
+			"chat_id", chatID,
+			"chat_type", chatType,
+			"mentioned_self", mentionedSelf,
+			"mention_count", len(mentionedOpenIDs),
+			"mentioned_any", mentionedAny,
+			"raw_text", rawText,
+		)
+		text = "/primary on"
+	}
 	if strings.TrimSpace(text) == "" && len(attachments) == 0 && len(out.MergeForwardMessageIDs) == 0 {
 		return nil
 	}
 	out.Text = text
 	out.Attachments = attachments
 	return out
+}
+
+func groupPolicyRootMessageID(messageID, rootMessageID, parentMessageID string) string {
+	messageID = strings.TrimSpace(messageID)
+	rootMessageID = strings.TrimSpace(rootMessageID)
+	parentMessageID = strings.TrimSpace(parentMessageID)
+	if parentMessageID == "" && rootMessageID != "" && rootMessageID == messageID {
+		return ""
+	}
+	return rootMessageID
 }
 
 func (a *Adapter) convertMessageRecall(event *larkim.P2MessageRecalledV1) *MessageRecall {
@@ -1464,6 +1668,12 @@ func (a *Adapter) resolveFetchedMessage(ctx context.Context, msg *larkim.Message
 			return "", nil, fmt.Errorf("invalid forwarded audio message %s", messageID)
 		}
 		return "", []Attachment{attachmentWithSource(attachment, messageID)}, nil
+	case "media":
+		attachment, ok := extractMediaAttachment(content)
+		if !ok {
+			return "", nil, fmt.Errorf("invalid forwarded media message %s", messageID)
+		}
+		return "", []Attachment{attachmentWithSource(attachment, messageID)}, nil
 	case "merge_forward":
 		if depth >= mergeForwardMaxDepth {
 			return "Forwarded messages (nested merge depth limit reached).", nil, nil
@@ -1539,6 +1749,20 @@ func extractAudioAttachment(raw *string) (Attachment, bool) {
 	return Attachment{Kind: "audio", ResourceKey: strings.TrimSpace(body.FileKey)}, true
 }
 
+func extractMediaAttachment(raw *string) (Attachment, bool) {
+	if raw == nil {
+		return Attachment{}, false
+	}
+	var body larkim.MessageMedia
+	if err := json.Unmarshal([]byte(*raw), &body); err != nil {
+		return Attachment{}, false
+	}
+	if strings.TrimSpace(body.FileKey) == "" {
+		return Attachment{}, false
+	}
+	return Attachment{Kind: "media", ResourceKey: strings.TrimSpace(body.FileKey)}, true
+}
+
 func firstNonEmptyString(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
@@ -1553,11 +1777,27 @@ func stripBotMention(text string, mentions []*larkim.MentionEvent, botOpenID str
 		if mention == nil || mention.Key == nil {
 			continue
 		}
-		if mention.Id != nil && mention.Id.OpenId != nil && *mention.Id.OpenId == botOpenID {
+		if mention.Id != nil && mention.Id.OpenId != nil && strings.TrimSpace(*mention.Id.OpenId) == strings.TrimSpace(botOpenID) {
 			text = strings.ReplaceAll(text, *mention.Key, "")
 		}
 	}
 	return strings.TrimSpace(text)
+}
+
+func mentionOnlyPrimaryOnCommand(text string, mentions []*larkim.MentionEvent, mentionedOpenIDs []string) bool {
+	if len(mentionedOpenIDs) != 1 {
+		return false
+	}
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	for _, mention := range mentions {
+		if mention == nil || mention.Key == nil {
+			continue
+		}
+		text = strings.ReplaceAll(text, *mention.Key, "")
+	}
+	return strings.TrimSpace(text) == ""
 }
 
 func mentioned(mentions []*larkim.MentionEvent, botOpenID string) bool {
@@ -1565,32 +1805,50 @@ func mentioned(mentions []*larkim.MentionEvent, botOpenID string) bool {
 		if mention == nil || mention.Id == nil || mention.Id.OpenId == nil {
 			continue
 		}
-		if *mention.Id.OpenId == botOpenID {
+		if strings.TrimSpace(*mention.Id.OpenId) == strings.TrimSpace(botOpenID) {
 			return true
 		}
 	}
 	return false
 }
 
-func mentionedEveryone(mentions []*larkim.MentionEvent) bool {
+func mentionedOpenIDs(mentions []*larkim.MentionEvent) []string {
+	if len(mentions) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(mentions))
 	for _, mention := range mentions {
-		if mention == nil {
+		if mention == nil || mention.Id == nil || mention.Id.OpenId == nil {
 			continue
 		}
-		if mention.Key != nil {
-			key := strings.ToLower(strings.TrimSpace(*mention.Key))
-			if key == "@all" || strings.Contains(key, "所有人") || strings.Contains(key, "everyone") {
-				return true
-			}
+		openID := strings.TrimSpace(*mention.Id.OpenId)
+		if openID == "" {
+			continue
 		}
-		if mention.Name != nil {
-			name := strings.ToLower(strings.TrimSpace(*mention.Name))
-			if name == "all" || strings.Contains(name, "所有人") || strings.Contains(name, "everyone") {
-				return true
-			}
+		if _, ok := seen[openID]; ok {
+			continue
+		}
+		seen[openID] = struct{}{}
+		out = append(out, openID)
+	}
+	return out
+}
+
+func hasMentionEvents(mentions []*larkim.MentionEvent) bool {
+	for _, mention := range mentions {
+		if mention != nil {
+			return true
 		}
 	}
 	return false
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func parseReactionUserID(value *larkim.UserId) string {
@@ -1747,6 +2005,9 @@ func defaultAttachmentExt(kind string) string {
 	if kind == "audio" {
 		return ".opus"
 	}
+	if kind == "media" {
+		return ".mp4"
+	}
 	return ".bin"
 }
 
@@ -1839,22 +2100,30 @@ func reactionKey(messageID, emojiType string) string {
 	return strings.TrimSpace(messageID) + ":" + strings.TrimSpace(emojiType)
 }
 
+type botProfile struct {
+	OpenID string
+	Name   string
+}
+
 func (a *Adapter) fetchBotOpenID() string {
+	return a.fetchBotProfile().OpenID
+}
+
+func (a *Adapter) fetchBotProfile() botProfile {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	body, _ := json.Marshal(map[string]string{
 		"app_id":     a.cfg.AppID,
 		"app_secret": a.cfg.AppSecret,
 	})
-	openBaseURL := config.FeishuOpenBaseURLForConfig(a.cfg)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, openBaseURL+"/open-apis/auth/v3/tenant_access_token/internal", strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.cfg.OpenBaseURL()+"/open-apis/auth/v3/tenant_access_token/internal", strings.NewReader(string(body)))
 	if err != nil {
-		return ""
+		return botProfile{}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return ""
+		return botProfile{}
 	}
 	defer resp.Body.Close()
 	var tokenResp struct {
@@ -1862,26 +2131,32 @@ func (a *Adapter) fetchBotOpenID() string {
 		TenantAccessToken string `json:"tenant_access_token"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil || tokenResp.Code != 0 || tokenResp.TenantAccessToken == "" {
-		return ""
+		return botProfile{}
 	}
-	infoReq, err := http.NewRequestWithContext(ctx, http.MethodGet, openBaseURL+"/open-apis/bot/v3/info", nil)
+	infoReq, err := http.NewRequestWithContext(ctx, http.MethodGet, a.cfg.OpenBaseURL()+"/open-apis/bot/v3/info", nil)
 	if err != nil {
-		return ""
+		return botProfile{}
 	}
 	infoReq.Header.Set("Authorization", "Bearer "+tokenResp.TenantAccessToken)
 	infoResp, err := http.DefaultClient.Do(infoReq)
 	if err != nil {
-		return ""
+		return botProfile{}
 	}
 	defer infoResp.Body.Close()
 	var info struct {
 		Code int `json:"code"`
 		Bot  struct {
-			OpenID string `json:"open_id"`
+			OpenID  string `json:"open_id"`
+			AppName string `json:"app_name"`
+			Name    string `json:"name"`
+			BotName string `json:"bot_name"`
 		} `json:"bot"`
 	}
 	if err := json.NewDecoder(infoResp.Body).Decode(&info); err != nil || info.Code != 0 {
-		return ""
+		return botProfile{}
 	}
-	return info.Bot.OpenID
+	return botProfile{
+		OpenID: strings.TrimSpace(info.Bot.OpenID),
+		Name:   firstNonEmptyString(info.Bot.AppName, info.Bot.Name, info.Bot.BotName),
+	}
 }

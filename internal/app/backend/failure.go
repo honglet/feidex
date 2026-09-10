@@ -50,6 +50,7 @@ type FailureAsyncDeps struct {
 	CleanupSubmissionRuntimeState      func(sub *state.Submission)
 	ClearSubmissionProcessingReactions func(sub *state.Submission)
 	StartNextSubmissionAsync           func(sessionKey, reason string)
+	NextQueuedSubmissionSessionKey     func(sessionKey string) string
 	RunAsync                           func(fn func())
 }
 
@@ -192,6 +193,13 @@ func (s BackendFailureService) StartNextSubmissionAsync(sessionKey, reason strin
 	if s.deps.Async.StartNextSubmissionAsync != nil {
 		s.deps.Async.StartNextSubmissionAsync(sessionKey, reason)
 	}
+}
+
+func (s BackendFailureService) NextQueuedSubmissionSessionKey(sessionKey string) string {
+	if s.deps.Async.NextQueuedSubmissionSessionKey != nil {
+		return strings.TrimSpace(s.deps.Async.NextQueuedSubmissionSessionKey(sessionKey))
+	}
+	return ""
 }
 
 func (s BackendFailureService) RunAsync(fn func()) {
@@ -410,9 +418,13 @@ func (s BackendFailureService) FailSubmissionWithoutTerminalCompletion(sessionKe
 		)
 	}
 	s.CleanupSubmissionRuntimeState(sub)
-	if updatedSess != nil && sessionShouldStartNextSubmissionAsync(updatedSess) {
+	nextSessionKey := ""
+	if updatedSess != nil {
+		nextSessionKey = s.NextQueuedSubmissionSessionKey(sessionKey)
+	}
+	if nextSessionKey != "" {
 		s.RunAsync(func() {
-			s.StartNextSubmissionAsync(sessionKey, "backendFailed")
+			s.StartNextSubmissionAsync(nextSessionKey, "backendFailed")
 		})
 	}
 }
@@ -428,10 +440,4 @@ func isPendingRequestOpen(req *state.PendingRequest) bool {
 	default:
 		return false
 	}
-}
-
-// sessionShouldStartNextSubmissionAsync reports whether the session should
-// start the next submission asynchronously.
-func sessionShouldStartNextSubmissionAsync(sess *state.Session) bool {
-	return sess != nil && !appsessionctx.HasInFlightSubmission(sess) && len(sess.Queue) > 0
 }

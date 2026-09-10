@@ -91,11 +91,9 @@ func (c *resettableLarkTokenCache) clearTenantAccessTokens(appID string) int {
 }
 
 func newFeishuLarkClient(cfg config.FeishuConfig) *lark.Client {
-	return lark.NewClient(
-		cfg.AppID,
-		cfg.AppSecret,
-		lark.WithOpenBaseUrl(config.FeishuOpenBaseURLForConfig(cfg)),
+	return lark.NewClient(cfg.AppID, cfg.AppSecret,
 		lark.WithTokenCache(sharedFeishuTokenCache),
+		lark.WithOpenBaseUrl(cfg.OpenBaseURL()),
 	)
 }
 

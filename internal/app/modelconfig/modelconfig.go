@@ -30,7 +30,7 @@ const DefaultOptionValue = "__default__"
 const ClaudeDefaultModelAlias = "sonnet"
 
 // ModelCommandUsage is the usage string for the /model command.
-const ModelCommandUsage = "/model | /model set <model-id|default> | /model effort <effort|default> | /model plan | /model plan set <model-id|default> | /model plan effort <effort|default>"
+const ModelCommandUsage = "/model | /model set <model-id|default> | /model effort <effort|default> | /model option add <model-id> | /model option remove <model-id> | /model plan | /model plan set <model-id|default> | /model plan effort <effort|default>"
 
 // EffortCommandUsage is the usage string for the /effort command.
 const EffortCommandUsage = "/effort | /effort <effort|default>"
@@ -91,6 +91,48 @@ func actionStringValue(action *feishu.CardAction, key string) string {
 	return strings.TrimSpace(value)
 }
 
+func actionFormStringValue(action *feishu.CardAction, key string) string {
+	if action == nil || len(action.FormValue) == 0 {
+		return ""
+	}
+	raw, ok := action.FormValue[key]
+	if !ok {
+		return ""
+	}
+	switch value := raw.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	default:
+		return strings.TrimSpace(fmt.Sprint(value))
+	}
+}
+
+func actionSelectedStringValue(action *feishu.CardAction, formKeys ...string) string {
+	if action == nil {
+		return ""
+	}
+	for _, key := range formKeys {
+		if value := actionFormStringValue(action, key); value != "" {
+			return value
+		}
+		if value := actionStringValue(action, key); value != "" {
+			return value
+		}
+	}
+	if value := strings.TrimSpace(action.Option); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(action.InputValue); value != "" {
+		return value
+	}
+	for _, value := range action.Options {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 // CommandActionFromMessage builds a CardAction from an InboundMessage.
 func CommandActionFromMessage(msg *feishu.InboundMessage, actionValue map[string]any) *feishu.CardAction {
 	if actionValue == nil {
@@ -149,8 +191,9 @@ type ModelConfigService struct {
 	HandleBackendModelCommand        func(msg *feishu.InboundMessage, args []string) error
 
 	// Menu helper callbacks.
-	FormatMenuBody            func(action, body string) string
-	FrontendIdleBlockedReason func() string
+	FormatMenuBody                                  func(action, body string) string
+	FrontendIdleBlockedReason                       func() string
+	FrontendIdleBlockedReasonIgnoringCurrentMessage func() string
 
 	// Card action response callback.
 	ReplyCommandActionResponse func(msg *feishu.InboundMessage, resp *callback.CardActionTriggerResponse) error
@@ -167,7 +210,7 @@ func (s ModelConfigService) codexConfig() *config.Config {
 // Codex standalone helpers
 // ---------------------------------------------------------------------------
 
-// ConfiguredGlobalModel returns the globally configured codex model ID, or empty string.
+// ConfiguredGlobalModel returns the bot-default Codex model ID, or empty string.
 func ConfiguredGlobalModel(cfg *config.Config) string {
 	if cfg == nil {
 		return ""
@@ -175,7 +218,7 @@ func ConfiguredGlobalModel(cfg *config.Config) string {
 	return strings.TrimSpace(cfg.Codex.Model)
 }
 
-// ConfiguredGlobalReasoningEffort returns the globally configured reasoning effort, or empty string.
+// ConfiguredGlobalReasoningEffort returns the bot-default reasoning effort, or empty string.
 func ConfiguredGlobalReasoningEffort(cfg *config.Config) string {
 	if cfg == nil {
 		return ""
@@ -332,6 +375,14 @@ func ConfiguredClaudeEffort(cfg *config.Config) string {
 	return strings.TrimSpace(cfg.Claude.Effort)
 }
 
+// ConfiguredClaudeModelOptions returns the configured extra Claude model picker options.
+func ConfiguredClaudeModelOptions(cfg *config.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	return NormalizeClaudeModelOptions(cfg.Claude.ModelOptions)
+}
+
 // NormalizeClaudeModelValue normalizes a Claude model value, mapping empty/default to the built-in alias.
 func NormalizeClaudeModelValue(value string) string {
 	value = strings.TrimSpace(value)
@@ -343,9 +394,54 @@ func NormalizeClaudeModelValue(value string) string {
 	}
 }
 
+// NormalizeClaudeModelOptions trims, drops empties, and de-duplicates Claude model picker options.
+func NormalizeClaudeModelOptions(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+// AddClaudeModelOption appends a model picker option if it is not already present.
+func AddClaudeModelOption(values []string, model string) []string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return NormalizeClaudeModelOptions(values)
+	}
+	values = append(NormalizeClaudeModelOptions(values), model)
+	return NormalizeClaudeModelOptions(values)
+}
+
+// RemoveClaudeModelOption removes a model picker option.
+func RemoveClaudeModelOption(values []string, model string) []string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return NormalizeClaudeModelOptions(values)
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range NormalizeClaudeModelOptions(values) {
+		if value == model {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
+}
+
 // ClaudeModelPickerOptions builds the list of Claude model picker options with the current selection marked.
 func ClaudeModelPickerOptions(cfg *config.Config) []runtime.ClaudeModelOption {
-	options := make([]runtime.ClaudeModelOption, 0, len(ClaudeBuiltinModelOptions)+1)
+	configuredOptions := ConfiguredClaudeModelOptions(cfg)
+	options := make([]runtime.ClaudeModelOption, 0, len(ClaudeBuiltinModelOptions)+len(configuredOptions)+1)
 	seen := map[string]struct{}{}
 	current := ConfiguredClaudeModel(cfg)
 	for _, item := range ClaudeBuiltinModelOptions {
@@ -358,6 +454,20 @@ func ClaudeModelPickerOptions(cfg *config.Config) []runtime.ClaudeModelOption {
 			Label: label,
 		})
 		seen[item.Value] = struct{}{}
+	}
+	for _, model := range configuredOptions {
+		if _, ok := seen[model]; ok {
+			continue
+		}
+		label := "配置 · `" + model + "`"
+		if model == current {
+			label = "当前 · 配置 (`" + model + "`)"
+		}
+		options = append(options, runtime.ClaudeModelOption{
+			Value: model,
+			Label: label,
+		})
+		seen[model] = struct{}{}
 	}
 	if current != "" {
 		if _, ok := seen[current]; !ok {
@@ -421,11 +531,11 @@ func (s ModelConfigService) RenderModelConfigCard(result codexrpc.ModelListResul
 	planEffortValue := ConfiguredPlanReasoningEffort(cfg)
 	modelSource := "跟随 app-server 默认"
 	if modelValue != "" {
-		modelSource = "全局显式配置"
+		modelSource = "Bot 默认显式配置"
 	}
 	effortSource := "跟随模型默认"
 	if effortValue != "" {
-		effortSource = "全局显式配置"
+		effortSource = "Bot 默认显式配置"
 	}
 	planModelSource := "跟随 default mode"
 	if planModelValue != "" {
@@ -464,7 +574,7 @@ func (s ModelConfigService) RenderModelConfigCard(result codexrpc.ModelListResul
 					return "\n\n" + modelDescription
 				}(),
 		},
-		{"tag": "markdown", "content": "选择全局模型"},
+		{"tag": "markdown", "content": "选择 Bot 默认模型"},
 	}
 	modelOptions := []cards.SelectStaticOption{{
 		Text: func() string {
@@ -491,13 +601,13 @@ func (s ModelConfigService) RenderModelConfigCard(result codexrpc.ModelListResul
 	}
 	elements = append(elements, cards.BuildSelectStaticElement(
 		"model_config_select_model",
-		"选择全局模型",
+		"选择 Bot 默认模型",
 		map[string]any{"action": "model.config.select_model", "session_key": sessionKey, "menu_action": menuAction},
 		modelOptions,
 		modelInitialOption,
 	))
 
-	elements = append(elements, map[string]any{"tag": "markdown", "content": "选择全局推理强度"})
+	elements = append(elements, map[string]any{"tag": "markdown", "content": "选择 Bot 默认推理强度"})
 	effortOptions := []cards.SelectStaticOption{{
 		Text: func() string {
 			if effortValue == "" {
@@ -525,7 +635,7 @@ func (s ModelConfigService) RenderModelConfigCard(result codexrpc.ModelListResul
 	}
 	elements = append(elements, cards.BuildSelectStaticElement(
 		"model_config_select_effort",
-		"选择全局推理强度",
+		"选择 Bot 默认推理强度",
 		map[string]any{"action": "model.config.select_effort", "session_key": sessionKey, "menu_action": menuAction},
 		effortOptions,
 		effortInitialOption,
@@ -838,7 +948,7 @@ func (s ModelConfigService) RenderClaudeModelConfigCard(sessionKey, menuAction s
 			"content": "当前 backend: `claude`\n" +
 				"当前模型: `" + currentModel + "`\n" +
 				"当前推理强度: `" + currentEffort + "`\n\n" +
-				"这里提供 Claude 常用别名与当前自定义 model。\n" +
+				"这里提供 Claude 常用别名、已配置候选 model 与当前自定义 model。\n" +
 				"需要任意 raw model 时，请直接使用 `/model set <model-id>`。\n" +
 				"`/model set default` 会恢复为 `sonnet`。\n" +
 				"切换 Claude model / effort 只允许在当前 frontend 空闲时进行；成功后会尝试立即应用到当前会话，并用于后续对话。",
@@ -895,6 +1005,7 @@ func (s ModelConfigService) RenderClaudeModelConfigCard(sessionKey, menuAction s
 			effortInitialOption,
 		),
 	)
+	elements = append(elements, renderClaudeModelOptionConfigElements(cfg, sessionKey, menuAction)...)
 	if strings.TrimSpace(sessionKey) != "" {
 		elements = append(elements, ModelCardActionRow([]feishu.Button{{
 			Text:  "返回上一级",
@@ -911,17 +1022,108 @@ func (s ModelConfigService) RenderClaudeModelConfigCard(sessionKey, menuAction s
 	return card
 }
 
+func renderClaudeModelOptionConfigElements(cfg *config.Config, sessionKey, menuAction string) []map[string]any {
+	configuredOptions := ConfiguredClaudeModelOptions(cfg)
+	elements := []map[string]any{
+		{"tag": "markdown", "content": "管理候选模型"},
+	}
+	addRows := cards.BuildMarkdownBodyCardActionElements([]feishu.Button{{
+		Text: "添加候选模型",
+		Type: "primary",
+		Name: "claude_model_option_add_submit",
+		Value: map[string]any{
+			"action":      "model.config.add_option",
+			"session_key": sessionKey,
+			"menu_action": menuAction,
+		},
+	}})
+	for _, row := range addRows {
+		setFirstButtonFormAction(row, "submit")
+	}
+	elements = append(elements, map[string]any{
+		"tag":                "form",
+		"name":               "claude_model_option_add_form",
+		"direction":          "vertical",
+		"horizontal_spacing": "8px",
+		"vertical_spacing":   "8px",
+		"elements": append([]map[string]any{{
+			"tag":         "input",
+			"name":        "model_id",
+			"required":    true,
+			"placeholder": map[string]any{"tag": "plain_text", "content": "输入要加入 /model 下拉框的 model id"},
+		}}, addRows...),
+	})
+	if len(configuredOptions) == 0 {
+		elements = append(elements, map[string]any{
+			"tag":     "markdown",
+			"content": "当前没有额外候选模型。",
+		})
+		return elements
+	}
+	removeOptions := make([]cards.SelectStaticOption, 0, len(configuredOptions))
+	for _, model := range configuredOptions {
+		removeOptions = append(removeOptions, cards.SelectStaticOption{
+			Text:  model,
+			Value: model,
+		})
+	}
+	elements = append(elements,
+		map[string]any{"tag": "markdown", "content": "移除候选模型"},
+		cards.BuildSelectStaticElement(
+			"claude_model_option_remove_select",
+			"选择后立即移除候选模型",
+			map[string]any{
+				"action":      "model.config.remove_option",
+				"session_key": sessionKey,
+				"menu_action": menuAction,
+			},
+			removeOptions,
+			"",
+		),
+	)
+	return elements
+}
+
+func setFirstButtonFormAction(row map[string]any, actionType string) {
+	columns, _ := row["columns"].([]map[string]any)
+	if len(columns) == 0 {
+		return
+	}
+	elements, _ := columns[0]["elements"].([]map[string]any)
+	if len(elements) == 0 {
+		return
+	}
+	elements[0]["form_action_type"] = actionType
+}
+
 // EnsureClaudeRuntimeConfigChangeSafe checks that the frontend is idle before
 // allowing a Claude model/effort configuration change.
 func (s ModelConfigService) EnsureClaudeRuntimeConfigChangeSafe() error {
-	if reason := strings.TrimSpace(s.FrontendIdleBlockedReason()); reason != "" {
-		return fmt.Errorf("Claude model / effort 只能在当前 frontend 空闲时切换: %s", reason)
+	return s.ensureClaudeRuntimeConfigChangeSafe(false)
+}
+
+func (s ModelConfigService) ensureClaudeRuntimeConfigChangeSafe(ignoreCurrentMessage bool) error {
+	blockedReason := s.FrontendIdleBlockedReason
+	if ignoreCurrentMessage && s.FrontendIdleBlockedReasonIgnoringCurrentMessage != nil {
+		blockedReason = s.FrontendIdleBlockedReasonIgnoringCurrentMessage
+	}
+	if blockedReason != nil {
+		if reason := strings.TrimSpace(blockedReason()); reason != "" {
+			return fmt.Errorf("Claude model / effort 只能在当前 frontend 空闲时切换: %s", reason)
+		}
 	}
 	return nil
 }
 
 // UpdateClaudeModelConfig persists a Claude config mutation and hot-reloads.
 func (s ModelConfigService) UpdateClaudeModelConfig(mutate func(*config.ClaudeConfig)) error {
+	return s.updateClaudeModelConfig(mutate, false)
+}
+
+// UpdateClaudeModelOptionsConfig persists Claude picker option changes. This
+// does not affect the active runtime model, so it is allowed while the frontend
+// is busy.
+func (s ModelConfigService) UpdateClaudeModelOptionsConfig(mutate func(*config.ClaudeConfig)) error {
 	cfg := s.GetConfig()
 	if cfg == nil {
 		return fmt.Errorf("nil config")
@@ -930,7 +1132,26 @@ func (s ModelConfigService) UpdateClaudeModelConfig(mutate func(*config.ClaudeCo
 	if strings.TrimSpace(cfgPath) == "" {
 		return fmt.Errorf("missing config path")
 	}
-	if err := s.EnsureClaudeRuntimeConfigChangeSafe(); err != nil {
+	mu := s.GetConfigMu()
+	mu.Lock()
+	defer mu.Unlock()
+	mutate(&cfg.Claude)
+	if err := cfg.Normalize(filepath.Dir(cfgPath)); err != nil {
+		return err
+	}
+	return config.Save(cfgPath, cfg)
+}
+
+func (s ModelConfigService) updateClaudeModelConfig(mutate func(*config.ClaudeConfig), ignoreCurrentMessage bool) error {
+	cfg := s.GetConfig()
+	if cfg == nil {
+		return fmt.Errorf("nil config")
+	}
+	cfgPath := s.GetCfgPath()
+	if strings.TrimSpace(cfgPath) == "" {
+		return fmt.Errorf("missing config path")
+	}
+	if err := s.ensureClaudeRuntimeConfigChangeSafe(ignoreCurrentMessage); err != nil {
 		return err
 	}
 	mu := s.GetConfigMu()
@@ -981,15 +1202,19 @@ func (s ModelConfigService) HotApplyClaudeEffortToCurrentSession(sessionKey, eff
 
 // CompleteClaudeModelSet handles the Claude model selection card action.
 func (s ModelConfigService) CompleteClaudeModelSet(action *feishu.CardAction, modelID string) (*callback.CardActionTriggerResponse, error) {
+	return s.completeClaudeModelSet(action, modelID, false)
+}
+
+func (s ModelConfigService) completeClaudeModelSet(action *feishu.CardAction, modelID string, ignoreCurrentMessage bool) (*callback.CardActionTriggerResponse, error) {
 	sessionKey := actionSessionKey(action)
 	menuAction := actionStringValue(action, "menu_action")
 	if strings.TrimSpace(menuAction) == "" {
 		menuAction = "menu.model"
 	}
 	model := NormalizeClaudeModelValue(modelID)
-	if err := s.UpdateClaudeModelConfig(func(c *config.ClaudeConfig) {
+	if err := s.updateClaudeModelConfig(func(c *config.ClaudeConfig) {
 		c.Model = model
-	}); err != nil {
+	}, ignoreCurrentMessage); err != nil {
 		return &callback.CardActionTriggerResponse{Toast: &callback.Toast{Type: "error", Content: err.Error()}}, nil
 	}
 	toastType := "success"
@@ -1006,8 +1231,58 @@ func (s ModelConfigService) CompleteClaudeModelSet(action *feishu.CardAction, mo
 	}, nil
 }
 
+// CompleteClaudeModelOptionAdd handles the Claude picker option add form.
+func (s ModelConfigService) CompleteClaudeModelOptionAdd(action *feishu.CardAction) (*callback.CardActionTriggerResponse, error) {
+	sessionKey := actionSessionKey(action)
+	menuAction := actionStringValue(action, "menu_action")
+	if strings.TrimSpace(menuAction) == "" {
+		menuAction = "menu.model"
+	}
+	model := actionSelectedStringValue(action, "model_id")
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return &callback.CardActionTriggerResponse{Toast: &callback.Toast{Type: "warning", Content: "请输入 model id"}}, nil
+	}
+	if err := s.UpdateClaudeModelOptionsConfig(func(c *config.ClaudeConfig) {
+		c.ModelOptions = AddClaudeModelOption(c.ModelOptions, model)
+	}); err != nil {
+		return &callback.CardActionTriggerResponse{Toast: &callback.Toast{Type: "error", Content: err.Error()}}, nil
+	}
+	return &callback.CardActionTriggerResponse{
+		Toast: &callback.Toast{Type: "success", Content: "已添加 Claude 候选模型 `" + model + "`"},
+		Card:  rawCard(s.RenderClaudeModelConfigCard(sessionKey, menuAction)),
+	}, nil
+}
+
+// CompleteClaudeModelOptionRemove handles the Claude picker option remove form.
+func (s ModelConfigService) CompleteClaudeModelOptionRemove(action *feishu.CardAction) (*callback.CardActionTriggerResponse, error) {
+	sessionKey := actionSessionKey(action)
+	menuAction := actionStringValue(action, "menu_action")
+	if strings.TrimSpace(menuAction) == "" {
+		menuAction = "menu.model"
+	}
+	model := actionSelectedStringValue(action, "model_id", "claude_model_option_remove_select")
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return &callback.CardActionTriggerResponse{Toast: &callback.Toast{Type: "warning", Content: "请选择要移除的 model id"}}, nil
+	}
+	if err := s.UpdateClaudeModelOptionsConfig(func(c *config.ClaudeConfig) {
+		c.ModelOptions = RemoveClaudeModelOption(c.ModelOptions, model)
+	}); err != nil {
+		return &callback.CardActionTriggerResponse{Toast: &callback.Toast{Type: "error", Content: err.Error()}}, nil
+	}
+	return &callback.CardActionTriggerResponse{
+		Toast: &callback.Toast{Type: "success", Content: "已移除 Claude 候选模型 `" + model + "`"},
+		Card:  rawCard(s.RenderClaudeModelConfigCard(sessionKey, menuAction)),
+	}, nil
+}
+
 // CompleteClaudeEffortSet handles the Claude effort selection card action.
 func (s ModelConfigService) CompleteClaudeEffortSet(action *feishu.CardAction, effort string) (*callback.CardActionTriggerResponse, error) {
+	return s.completeClaudeEffortSet(action, effort, false)
+}
+
+func (s ModelConfigService) completeClaudeEffortSet(action *feishu.CardAction, effort string, ignoreCurrentMessage bool) (*callback.CardActionTriggerResponse, error) {
 	sessionKey := actionSessionKey(action)
 	menuAction := actionStringValue(action, "menu_action")
 	if strings.TrimSpace(menuAction) == "" {
@@ -1017,9 +1292,9 @@ func (s ModelConfigService) CompleteClaudeEffortSet(action *feishu.CardAction, e
 	if err != nil {
 		return &callback.CardActionTriggerResponse{Toast: &callback.Toast{Type: "warning", Content: err.Error()}}, nil
 	}
-	if err := s.UpdateClaudeModelConfig(func(c *config.ClaudeConfig) {
+	if err := s.updateClaudeModelConfig(func(c *config.ClaudeConfig) {
 		c.Effort = normalized
-	}); err != nil {
+	}, ignoreCurrentMessage); err != nil {
 		return &callback.CardActionTriggerResponse{Toast: &callback.Toast{Type: "error", Content: err.Error()}}, nil
 	}
 	toastType := "success"
@@ -1057,7 +1332,7 @@ func (s ModelConfigService) CommandClaudeModel(msg *feishu.InboundMessage, args 
 			if len(args) != 2 {
 				return fmt.Errorf("usage: %s", ModelCommandUsage)
 			}
-			resp, err := s.CompleteClaudeModelSet(action, strings.TrimSpace(args[1]))
+			resp, err := s.completeClaudeModelSet(action, strings.TrimSpace(args[1]), true)
 			if err != nil {
 				return err
 			}
@@ -1070,11 +1345,33 @@ func (s ModelConfigService) CommandClaudeModel(msg *feishu.InboundMessage, args 
 			if effort == "default" || effort == DefaultOptionValue {
 				effort = ""
 			}
-			resp, err := s.CompleteClaudeEffortSet(action, effort)
+			resp, err := s.completeClaudeEffortSet(action, effort, true)
 			if err != nil {
 				return err
 			}
 			return s.ReplyCommandActionResponse(msg, resp)
+		case "option":
+			if len(args) != 3 {
+				return fmt.Errorf("usage: %s", ModelCommandUsage)
+			}
+			switch strings.TrimSpace(args[1]) {
+			case "add":
+				action.FormValue = map[string]any{"model_id": strings.TrimSpace(args[2])}
+				resp, err := s.CompleteClaudeModelOptionAdd(action)
+				if err != nil {
+					return err
+				}
+				return s.ReplyCommandActionResponse(msg, resp)
+			case "remove", "delete", "rm":
+				action.FormValue = map[string]any{"model_id": strings.TrimSpace(args[2])}
+				resp, err := s.CompleteClaudeModelOptionRemove(action)
+				if err != nil {
+					return err
+				}
+				return s.ReplyCommandActionResponse(msg, resp)
+			default:
+				return fmt.Errorf("usage: %s", ModelCommandUsage)
+			}
 		default:
 			return fmt.Errorf("usage: %s", ModelCommandUsage)
 		}

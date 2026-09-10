@@ -78,12 +78,91 @@ func TestFinalAnswersAreSentImmediatelyAndNotReplayedOnCompletion(t *testing.T) 
 		"phase": "final_answer",
 	})
 
-	if len(ff.replyCards) != 2 {
-		t.Fatalf("expected both final cards to be sent immediately, got %d", len(ff.replyCards))
+	if len(ff.replyCards) != 1 {
+		t.Fatalf("expected first final card to be sent immediately, got %d", len(ff.replyCards))
+	}
+	if len(ff.patchedCards) != 1 {
+		t.Fatalf("expected second final answer to patch the first final card, got %d patches", len(ff.patchedCards))
+	}
+	if body := cardMarkdownContent(t, ff.patchedCards[0]); !strings.Contains(body, "second final") {
+		t.Fatalf("patched final body = %q, want second final", body)
 	}
 	finishTurn(a, "thread-1", "turn-1", "completed")
-	if len(ff.replyCards) != 2 {
-		t.Fatalf("expected no replay on completion, got %d cards", len(ff.replyCards))
+	if len(ff.replyCards) != 1 || len(ff.patchedCards) != 1 {
+		t.Fatalf("expected no replay on completion, got %d cards and %d patches", len(ff.replyCards), len(ff.patchedCards))
+	}
+}
+
+func TestLegacyAgentMessageWithoutPhaseIsFinalAndNotReplayedOnCompletion(t *testing.T) {
+	a, ff, _ := newTestApp(t)
+	sub := seedActiveSubmission(t, a, "sess-1", "thread-1", "turn-1")
+	newRuntimeStateService(a).bindTurnSubmission("thread-1", "turn-1", "sess-1", sub.ID)
+	newRuntimeStateService(a).markTurnStartedAt("turn-1", time.Now())
+	newTurnStreamService(a).noteTurnStarted("sess-1", sub)
+
+	newTurnStreamService(a).completeTurnItem(context.Background(), "thread-1", "turn-1", "item-1", map[string]any{
+		"type": "agent_message",
+		"text": "legacy final",
+	})
+
+	if len(ff.replyCards) != 1 {
+		t.Fatalf("reply cards after phase-less agent message = %d, want 1", len(ff.replyCards))
+	}
+	if got := cardHeaderTitle(t, ff.replyCards[0]); !strings.Contains(got, "反馈中") {
+		t.Fatalf("phase-less agent message title = %q, want feedback before completion", got)
+	}
+	if body := cardMarkdownContent(t, ff.replyCards[0]); !strings.Contains(body, "legacy final") {
+		t.Fatalf("phase-less agent message body = %q, want final text", body)
+	}
+
+	finishTurn(a, "thread-1", "turn-1", "completed")
+	if len(ff.replyCards) != 1 {
+		t.Fatalf("expected no extra final card on completion, got %d cards", len(ff.replyCards))
+	}
+	if len(ff.patchedCards) != 1 {
+		t.Fatalf("expected completion to patch feedback card into final, got %d patches", len(ff.patchedCards))
+	}
+	if got := cardHeaderTitle(t, ff.patchedCards[0]); !strings.Contains(got, "最终答复") {
+		t.Fatalf("completion fallback title = %q, want final answer", got)
+	}
+	if body := cardMarkdownContent(t, ff.patchedCards[0]); !strings.Contains(body, "legacy final") {
+		t.Fatalf("completion fallback body = %q, want final text", body)
+	}
+}
+
+func TestCommentaryOnlyTurnPromotesLastAgentMessageToFinalOnCompletion(t *testing.T) {
+	a, ff, _ := newTestApp(t)
+	sub := seedActiveSubmission(t, a, "sess-1", "thread-1", "turn-1")
+	newRuntimeStateService(a).bindTurnSubmission("thread-1", "turn-1", "sess-1", sub.ID)
+	newRuntimeStateService(a).markTurnStartedAt("turn-1", time.Now())
+	newTurnStreamService(a).noteTurnStarted("sess-1", sub)
+
+	newTurnStreamService(a).completeTurnItem(context.Background(), "thread-1", "turn-1", "item-1", map[string]any{
+		"type":  "agent_message",
+		"text":  "visible commentary",
+		"phase": "commentary",
+	})
+	newTurnStreamService(a).completeTurnItem(context.Background(), "thread-1", "turn-1", "item-2", map[string]any{
+		"type":  "agent_message",
+		"text":  "",
+		"phase": "final_answer",
+	})
+
+	if len(ff.replyCards) != 1 {
+		t.Fatalf("reply cards after commentary = %d, want 1", len(ff.replyCards))
+	}
+	finishTurn(a, "thread-1", "turn-1", "completed")
+	if len(ff.replyCards) != 1 {
+		t.Fatalf("expected no extra final card, got %d cards", len(ff.replyCards))
+	}
+	if len(ff.patchedCards) != 1 {
+		t.Fatalf("expected commentary card to be patched into final, got %d patches", len(ff.patchedCards))
+	}
+	if got := cardHeaderTitle(t, ff.patchedCards[0]); !strings.Contains(got, "最终答复") {
+		t.Fatalf("completion fallback title = %q, want final answer", got)
+	}
+	if body := cardMarkdownContent(t, ff.patchedCards[0]); !strings.Contains(body, "visible commentary") || strings.Contains(body, "任务已结束") {
+		t.Fatalf("completion fallback body = %q, want commentary as final", body)
 	}
 }
 

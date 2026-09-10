@@ -11,6 +11,7 @@ import (
 
 	"feidex/internal/app/apputil"
 	"feidex/internal/app/backend"
+	"feidex/internal/app/goalcmd"
 	"feidex/internal/app/serverrequest"
 	appskillscmd "feidex/internal/app/skillscmd"
 	"feidex/internal/app/turnbinding"
@@ -70,8 +71,9 @@ type appTrackers struct {
 	workspaceCloneOps   *workspaceCloneTracker
 	finalCardPatches    *finalCardPatchTracker
 	pendingSkills       *appskillscmd.PendingSkillTracker
+	groupAnnouncements  *groupAnnouncementTracker
 	maintenanceTrackers backend.TrackerMap
-	goals               *goalTracker
+	goals               *goalcmd.Tracker
 }
 
 func New(cfg *config.Config, cfgPath string) (*App, error) {
@@ -113,13 +115,17 @@ func newFrontendApp(cfg *config.Config, cfgPath string, store *state.Store, fron
 		liveThreads:         newLiveThreadTracker(),
 		autoRetries:         newAutoRetryTracker(),
 		trackers: appTrackers{
-			turnStreams:       newTurnStreamTracker(),
-			turnItems:         newTurnItemTracker(),
-			workspaceCloneOps: newWorkspaceCloneTracker(),
-			turnBindings:      turnbinding.NewTracker(store),
-			finalCardPatches:  newFinalCardPatchTracker(),
-			pendingSkills:     appskillscmd.NewPendingSkillTracker(),
+			turnStreams:        newTurnStreamTracker(),
+			turnItems:          newTurnItemTracker(),
+			workspaceCloneOps:  newWorkspaceCloneTracker(),
+			turnBindings:       turnbinding.NewTracker(store),
+			finalCardPatches:   newFinalCardPatchTracker(),
+			pendingSkills:      appskillscmd.NewPendingSkillTracker(),
+			groupAnnouncements: newGroupAnnouncementTracker(),
 		},
+	}
+	if err := canonicalizeStoredSessionKeys(app); err != nil {
+		return nil, err
 	}
 	if backend != "" {
 		handle, err := buildBackendRuntimeHandle(app, backend)
@@ -129,6 +135,8 @@ func newFrontendApp(cfg *config.Config, cfgPath string, store *state.Store, fron
 		handle.install(app)
 	}
 	app.feishu.SetHandlers(app.HandleFeishuMessage, app.HandleCardAction, app.HandleBotMenu, app.HandleFeishuRecall, app.HandleFeishuReaction)
+	configureGroupMessagePolicy(app)
+	configureGroupPrimaryEvents(app)
 	app.feishu.ConfigureLocalFileLinks("", "")
 	return app, nil
 }
@@ -152,6 +160,7 @@ func (a *App) Start(ctx context.Context) error {
 	startAttachmentCleanup(a)
 	newRuntimeMaintenanceService(a).StartDriveArtifactGCLoop(ctx)
 	newRuntimeMaintenanceService(a).StartUpgradeCheckLoop(ctx)
+	scheduleStartupGroupAnnouncementRefreshes(a)
 	go sendStartupReadyNotifications(a)
 	return nil
 }
@@ -181,14 +190,17 @@ func runAsync(a *App, fn func()) {
 }
 
 func buildThreadStartParams(a *App, ws *config.Workspace, sess *state.Session, effectiveModel string) codexrpc.ThreadStartParams {
+	if strings.TrimSpace(effectiveModel) == "" {
+		effectiveModel = effectiveCodexModel(a, sess, ws)
+	}
 	return codexrpc.ThreadStartParams{
 		Cwd:                    ws.Cwd,
-		ApprovalPolicy:         effectiveThreadApprovalPolicy(sess, ws),
-		Sandbox:                effectiveThreadSandboxMode(sess, ws),
+		ApprovalPolicy:         effectiveBindingApprovalPolicy(a, sess, ws),
+		Sandbox:                effectiveBindingSandboxMode(a, sess, ws),
 		ServiceName:            a.cfg.Codex.ServiceName,
 		ExperimentalRawEvents:  false,
 		PersistExtendedHistory: true,
-		ServiceTier:            strings.TrimSpace(effectiveThreadServiceTier(sess)),
+		ServiceTier:            strings.TrimSpace(effectiveBindingServiceTier(a, sess)),
 		Model:                  strings.TrimSpace(effectiveModel),
 	}
 }
@@ -258,7 +270,7 @@ func buildTurnSandboxPolicy(mode string) map[string]any {
 	}
 }
 
-func startSubmissionTurn(a *App, ctx context.Context, sessionKey, threadID string, sub *state.Submission, cwd, approvalPolicy, sandboxMode, serviceTier, model, reasoningEffort string) (string, error) {
+func startSubmissionTurn(a *App, ctx context.Context, sessionKey, threadID string, sub *state.Submission, cwd, approvalPolicy, sandboxMode, serviceTier, model, reasoningEffort, multiAgentMode string) (string, error) {
 	if sub == nil {
 		return "", fmt.Errorf("nil submission")
 	}
@@ -283,6 +295,9 @@ func startSubmissionTurn(a *App, ctx context.Context, sessionKey, threadID strin
 	if strings.TrimSpace(serviceTier) != "" {
 		turnParams["serviceTier"] = strings.TrimSpace(serviceTier)
 	}
+	if strings.TrimSpace(multiAgentMode) != "" {
+		turnParams["multiAgentMode"] = strings.TrimSpace(multiAgentMode)
+	}
 	if collaborationMode := codexCollaborationModeForTurnStart(a, sessionKey, threadID); collaborationMode != nil {
 		turnParams["collaborationMode"] = collaborationMode
 	}
@@ -294,6 +309,7 @@ func startSubmissionTurn(a *App, ctx context.Context, sessionKey, threadID strin
 		"sandbox_mode", sandboxMode,
 		"reasoning_effort", reasoningEffort,
 		"model", model,
+		"multi_agent_mode", multiAgentMode,
 		"collaboration_mode", turnParams["collaborationMode"],
 	)
 	client, err := requireCodexClient(a)

@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const currentSnapshotVersion = 6
+const currentSnapshotVersion = 10
 
 type Store struct {
 	path    string
@@ -25,6 +25,10 @@ type Store struct {
 type Snapshot struct {
 	Version                   int                                   `json:"version"`
 	Sessions                  map[string]*storedSession             `json:"sessions"`
+	AgentBindings             map[string]*AgentBinding              `json:"agent_bindings,omitempty"`
+	BotProfiles               map[string]*BotProfile                `json:"bot_profiles,omitempty"`
+	GroupPrimaries            map[string]*GroupPrimary              `json:"group_primaries,omitempty"`
+	GroupAnnouncementBlocks   map[string]*GroupAnnouncementBlock    `json:"group_announcement_blocks,omitempty"`
 	FrontendCardNotifications map[string][]FrontendCardNotification `json:"frontend_card_notifications,omitempty"`
 }
 
@@ -43,11 +47,16 @@ type Counters struct {
 
 type storedSession struct {
 	Key                           string                          `json:"key"`
+	BindingID                     string                          `json:"binding_id,omitempty"`
 	WorkspaceID                   string                          `json:"workspace_id"`
+	ChatID                        string                          `json:"chat_id,omitempty"`
+	ChatType                      string                          `json:"chat_type,omitempty"`
+	RootMessageID                 string                          `json:"root_message_id,omitempty"`
 	ActiveThreadID                string                          `json:"active_thread_id"`
 	ActiveThreadWorkspaceID       string                          `json:"active_thread_workspace_id"`
 	ActiveThreadApprovalPolicy    string                          `json:"active_thread_approval_policy"`
 	ActiveThreadSandboxMode       string                          `json:"active_thread_sandbox_mode"`
+	ActiveThreadMultiAgentMode    string                          `json:"active_thread_multi_agent_mode,omitempty"`
 	ActiveClaudePermissionMode    string                          `json:"active_claude_permission_mode,omitempty"`
 	ActiveThreadServiceTier       string                          `json:"active_thread_service_tier,omitempty"`
 	ActiveThreadCollaborationMode *SessionCollaborationMode       `json:"active_thread_collaboration_mode,omitempty"`
@@ -69,11 +78,111 @@ type FrontendCardNotification struct {
 	CreatedAt   int64  `json:"created_at,omitempty"`
 }
 
+// AgentBinding maps a local frontend/bot to one logical chat project.
+// WorkspaceID and the optional model settings refer to this local instance.
+type AgentBinding struct {
+	ID                      string                        `json:"id"`
+	FrontendID              string                        `json:"frontend_id"`
+	ChatID                  string                        `json:"chat_id"`
+	ChatType                string                        `json:"chat_type"`
+	WorkspaceID             string                        `json:"workspace_id"`
+	ModelOverride           string                        `json:"model_override,omitempty"`
+	ReasoningEffortOverride string                        `json:"reasoning_effort_override,omitempty"`
+	ServiceTierOverride     string                        `json:"service_tier_override,omitempty"`
+	SandboxModeOverride     string                        `json:"sandbox_mode_override,omitempty"`
+	ApprovalPolicyOverride  string                        `json:"approval_policy_override,omitempty"`
+	MultiAgentModeOverride  string                        `json:"multi_agent_mode_override,omitempty"`
+	ClaudePermissionMode    string                        `json:"claude_permission_mode,omitempty"`
+	PendingMessage          *AgentBindingPendingMessage   `json:"pending_message,omitempty"`
+	PendingMessages         []*AgentBindingPendingMessage `json:"pending_messages,omitempty"`
+	Status                  string                        `json:"status"`
+	CreatedAt               int64                         `json:"created_at"`
+	UpdatedAt               int64                         `json:"updated_at"`
+}
+
+// BotProfile stores the frontend/Bot default configuration. It is intentionally
+// independent from a group ConversationBinding; group bindings may override
+// runtime fields but never mutate this profile.
+type BotProfile struct {
+	ID                   string `json:"id"`
+	FrontendID           string `json:"frontend_id"`
+	WorkspaceID          string `json:"workspace_id,omitempty"`
+	Model                string `json:"model,omitempty"`
+	ReasoningEffort      string `json:"reasoning_effort,omitempty"`
+	ServiceTier          string `json:"service_tier,omitempty"`
+	SandboxMode          string `json:"sandbox_mode,omitempty"`
+	ApprovalPolicy       string `json:"approval_policy,omitempty"`
+	MultiAgentMode       string `json:"multi_agent_mode,omitempty"`
+	ClaudeModel          string `json:"claude_model,omitempty"`
+	ClaudePermissionMode string `json:"claude_permission_mode,omitempty"`
+	CreatedAt            int64  `json:"created_at"`
+	UpdatedAt            int64  `json:"updated_at"`
+}
+
+// GroupPrimary stores the bot OpenID that owns unmentioned messages in one
+// Feishu group. It is intentionally separate from AgentBinding, which only
+// owns local workspace/runtime configuration.
+type GroupPrimary struct {
+	ID             string `json:"id"`
+	ChatID         string `json:"chat_id"`
+	ChatType       string `json:"chat_type"`
+	OwnerBotOpenID string `json:"owner_bot_open_id,omitempty"`
+	CreatedAt      int64  `json:"created_at"`
+	UpdatedAt      int64  `json:"updated_at"`
+}
+
+// GroupAnnouncementBlock stores the Feishu upgraded group announcement block
+// owned by one local frontend/bot in one group chat.
+type GroupAnnouncementBlock struct {
+	ID              string `json:"id"`
+	FrontendID      string `json:"frontend_id"`
+	ChatID          string `json:"chat_id"`
+	ChatType        string `json:"chat_type"`
+	BotOpenID       string `json:"bot_open_id,omitempty"`
+	BlockID         string `json:"block_id,omitempty"`
+	Marker          string `json:"marker,omitempty"`
+	LastContentHash string `json:"last_content_hash,omitempty"`
+	LastUpdatedAt   int64  `json:"last_updated_at,omitempty"`
+	CreatedAt       int64  `json:"created_at"`
+	UpdatedAt       int64  `json:"updated_at"`
+}
+
+// AgentBindingPendingMessage stores one inbound group message while a binding
+// is waiting for a local workspace. It is replayed after binding activation.
+type AgentBindingPendingMessage struct {
+	SessionKey             string                          `json:"session_key,omitempty"`
+	MessageID              string                          `json:"message_id"`
+	ChatID                 string                          `json:"chat_id"`
+	ChatType               string                          `json:"chat_type"`
+	UserID                 string                          `json:"user_id"`
+	UserName               string                          `json:"user_name,omitempty"`
+	ChatName               string                          `json:"chat_name,omitempty"`
+	Text                   string                          `json:"text,omitempty"`
+	RootMessageID          string                          `json:"root_message_id,omitempty"`
+	ParentMessageID        string                          `json:"parent_message_id,omitempty"`
+	ThreadID               string                          `json:"thread_id,omitempty"`
+	Attachments            []AgentBindingPendingAttachment `json:"attachments,omitempty"`
+	MergeForwardMessageIDs []string                        `json:"merge_forward_message_ids,omitempty"`
+	ExpandedMergeForward   bool                            `json:"expanded_merge_forward,omitempty"`
+	MentionedOpenIDs       []string                        `json:"mentioned_open_ids,omitempty"`
+	MentionedAny           bool                            `json:"mentioned_any,omitempty"`
+	MentionedSelf          bool                            `json:"mentioned_self,omitempty"`
+	CreatedAt              int64                           `json:"created_at,omitempty"`
+	StoredAt               int64                           `json:"stored_at,omitempty"`
+}
+
+type AgentBindingPendingAttachment struct {
+	Kind            string `json:"kind,omitempty"`
+	ResourceKey     string `json:"resource_key,omitempty"`
+	SourceMessageID string `json:"source_message_id,omitempty"`
+}
+
 type SessionBackendThread struct {
 	ThreadID             string                    `json:"thread_id,omitempty"`
 	WorkspaceID          string                    `json:"workspace_id,omitempty"`
 	ApprovalPolicy       string                    `json:"approval_policy,omitempty"`
 	SandboxMode          string                    `json:"sandbox_mode,omitempty"`
+	MultiAgentMode       string                    `json:"multi_agent_mode,omitempty"`
 	ClaudePermissionMode string                    `json:"claude_permission_mode,omitempty"`
 	ServiceTier          string                    `json:"service_tier,omitempty"`
 	CollaborationMode    *SessionCollaborationMode `json:"collaboration_mode,omitempty"`
@@ -90,11 +199,13 @@ type SessionCollaborationMode struct {
 
 type Session struct {
 	Key                           string                          `json:"key"`
+	BindingID                     string                          `json:"binding_id,omitempty"`
 	WorkspaceID                   string                          `json:"workspace_id"`
 	ActiveThreadID                string                          `json:"active_thread_id"`
 	ActiveThreadWorkspaceID       string                          `json:"active_thread_workspace_id"`
 	ActiveThreadApprovalPolicy    string                          `json:"active_thread_approval_policy"`
 	ActiveThreadSandboxMode       string                          `json:"active_thread_sandbox_mode"`
+	ActiveThreadMultiAgentMode    string                          `json:"active_thread_multi_agent_mode,omitempty"`
 	ActiveClaudePermissionMode    string                          `json:"active_claude_permission_mode,omitempty"`
 	ActiveThreadServiceTier       string                          `json:"active_thread_service_tier,omitempty"`
 	ActiveThreadCollaborationMode *SessionCollaborationMode       `json:"active_thread_collaboration_mode,omitempty"`
@@ -146,6 +257,7 @@ type SubmissionSkill struct {
 type Submission struct {
 	ID                   string                 `json:"id"`
 	SessionKey           string                 `json:"session_key"`
+	BindingID            string                 `json:"binding_id,omitempty"`
 	WorkspaceID          string                 `json:"workspace_id"`
 	ThreadID             string                 `json:"thread_id"`
 	TurnID               string                 `json:"turn_id"`
@@ -208,6 +320,10 @@ func Open(path string) (*Store, error) {
 		data: Snapshot{
 			Version:                   currentSnapshotVersion,
 			Sessions:                  map[string]*storedSession{},
+			AgentBindings:             map[string]*AgentBinding{},
+			BotProfiles:               map[string]*BotProfile{},
+			GroupPrimaries:            map[string]*GroupPrimary{},
+			GroupAnnouncementBlocks:   map[string]*GroupAnnouncementBlock{},
 			FrontendCardNotifications: map[string][]FrontendCardNotification{},
 		},
 		runtime: runtimeState{
@@ -228,17 +344,54 @@ func Open(path string) (*Store, error) {
 	if len(b) == 0 {
 		return s, s.saveLocked()
 	}
-	if err := json.Unmarshal(b, &s.data); err != nil {
+	var loaded Snapshot
+	if err := json.Unmarshal(b, &loaded); err != nil {
 		return nil, err
 	}
+	s.data = loaded
 	if s.data.Sessions == nil {
 		s.data.Sessions = map[string]*storedSession{}
 	}
 	if s.data.FrontendCardNotifications == nil {
 		s.data.FrontendCardNotifications = map[string][]FrontendCardNotification{}
 	}
+	if s.data.BotProfiles == nil {
+		s.data.BotProfiles = map[string]*BotProfile{}
+	}
 	rewrite := s.data.Version != currentSnapshotVersion
 	s.data.Version = currentSnapshotVersion
+	normalizedBindings := normalizeAgentBindings(s.data.AgentBindings)
+	if normalizedBindings == nil {
+		normalizedBindings = map[string]*AgentBinding{}
+	}
+	if !agentBindingsEqual(s.data.AgentBindings, normalizedBindings) {
+		rewrite = true
+	}
+	s.data.AgentBindings = normalizedBindings
+	normalizedProfiles := normalizeBotProfiles(s.data.BotProfiles)
+	if normalizedProfiles == nil {
+		normalizedProfiles = map[string]*BotProfile{}
+	}
+	if !botProfilesEqual(s.data.BotProfiles, normalizedProfiles) {
+		rewrite = true
+	}
+	s.data.BotProfiles = normalizedProfiles
+	normalizedPrimaries := normalizeGroupPrimaries(s.data.GroupPrimaries)
+	if normalizedPrimaries == nil {
+		normalizedPrimaries = map[string]*GroupPrimary{}
+	}
+	if !groupPrimariesEqual(s.data.GroupPrimaries, normalizedPrimaries) {
+		rewrite = true
+	}
+	s.data.GroupPrimaries = normalizedPrimaries
+	normalizedAnnouncementBlocks := normalizeGroupAnnouncementBlocks(s.data.GroupAnnouncementBlocks)
+	if normalizedAnnouncementBlocks == nil {
+		normalizedAnnouncementBlocks = map[string]*GroupAnnouncementBlock{}
+	}
+	if !groupAnnouncementBlocksEqual(s.data.GroupAnnouncementBlocks, normalizedAnnouncementBlocks) {
+		rewrite = true
+	}
+	s.data.GroupAnnouncementBlocks = normalizedAnnouncementBlocks
 	for key, sess := range s.data.Sessions {
 		persisted := normalizeStoredSession(sess)
 		if !storedSessionsEqual(sess, persisted) {
@@ -255,6 +408,342 @@ func Open(path string) (*Store, error) {
 	return s, nil
 }
 
+// GetAgentBinding returns a binding by id without frontend filtering.
+func (s *Store) GetAgentBinding(id string) *AgentBinding {
+	return s.GetScopedAgentBinding("", id)
+}
+
+// GetScopedAgentBinding returns a binding by id when it belongs to frontendID.
+// An empty frontendID disables the scope check for store-level callers.
+func (s *Store) GetScopedAgentBinding(frontendID, id string) *AgentBinding {
+	frontendID = strings.TrimSpace(frontendID)
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	binding, ok := s.data.AgentBindings[id]
+	if !ok || binding == nil {
+		return nil
+	}
+	if frontendID != "" && binding.FrontendID != frontendID {
+		return nil
+	}
+	return cloneAgentBinding(binding)
+}
+
+// AllAgentBindings returns deep copies of all persisted bindings.
+func (s *Store) AllAgentBindings() []*AgentBinding {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneAgentBindings(s.data.AgentBindings)
+}
+
+// AgentBindingsByFrontend returns bindings owned by one local frontend.
+func (s *Store) AgentBindingsByFrontend(frontendID string) []*AgentBinding {
+	frontendID = strings.TrimSpace(frontendID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneAgentBindingsMatching(s.data.AgentBindings, func(binding *AgentBinding) bool {
+		return binding != nil && binding.FrontendID == frontendID
+	})
+}
+
+// AgentBindingsByChat returns bindings for one frontend and logical chat.
+func (s *Store) AgentBindingsByChat(frontendID, chatType, chatID string) []*AgentBinding {
+	frontendID = strings.TrimSpace(frontendID)
+	chatType = strings.ToLower(strings.TrimSpace(chatType))
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneAgentBindingsMatching(s.data.AgentBindings, func(binding *AgentBinding) bool {
+		if binding == nil || binding.FrontendID != frontendID || binding.ChatID != chatID {
+			return false
+		}
+		return chatType == "" || binding.ChatType == chatType
+	})
+}
+
+// UpsertAgentBinding persists a local binding.
+func (s *Store) UpsertAgentBinding(binding *AgentBinding) error {
+	if binding == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := cloneAgentBinding(binding)
+	if cp == nil || cp.ID == "" {
+		return nil
+	}
+	normalizeAgentBindingValues(cp)
+	now := time.Now().Unix()
+	if previous := s.data.AgentBindings[cp.ID]; previous != nil && cp.CreatedAt == 0 {
+		cp.CreatedAt = previous.CreatedAt
+	}
+	for id, previous := range s.data.AgentBindings {
+		if id == cp.ID || previous == nil {
+			continue
+		}
+		if previous.FrontendID == cp.FrontendID && previous.ChatType == cp.ChatType && previous.ChatID == cp.ChatID {
+			return fmt.Errorf("agent binding already exists for frontend %q chat %q: %s", cp.FrontendID, cp.ChatID, id)
+		}
+	}
+	if cp.CreatedAt == 0 {
+		cp.CreatedAt = now
+	}
+	cp.UpdatedAt = now
+	if s.data.AgentBindings == nil {
+		s.data.AgentBindings = map[string]*AgentBinding{}
+	}
+	s.data.AgentBindings[cp.ID] = cp
+	return s.saveLocked()
+}
+
+// UpsertScopedAgentBinding persists a binding owned by frontendID. A blank
+// binding frontend is filled from the scope; a different frontend is rejected.
+func (s *Store) UpsertScopedAgentBinding(frontendID string, binding *AgentBinding) error {
+	if binding == nil {
+		return nil
+	}
+	frontendID = strings.TrimSpace(frontendID)
+	cp := cloneAgentBinding(binding)
+	if cp == nil {
+		return nil
+	}
+	if strings.TrimSpace(cp.FrontendID) == "" {
+		cp.FrontendID = frontendID
+	}
+	if frontendID != "" && strings.TrimSpace(cp.FrontendID) != frontendID {
+		return fmt.Errorf("agent binding frontend %q does not match scope %q", cp.FrontendID, frontendID)
+	}
+	return s.UpsertAgentBinding(cp)
+}
+
+// GetBotProfile returns the profile owned by frontendID.
+func (s *Store) GetBotProfile(frontendID string) *BotProfile {
+	frontendID = strings.TrimSpace(frontendID)
+	if frontendID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, profile := range s.data.BotProfiles {
+		if profile != nil && profile.FrontendID == frontendID {
+			return cloneBotProfile(profile)
+		}
+	}
+	return nil
+}
+
+// AllBotProfiles returns deep copies of all profiles.
+func (s *Store) AllBotProfiles() []*BotProfile {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneBotProfiles(s.data.BotProfiles)
+}
+
+// UpsertBotProfile persists one frontend-scoped profile.
+func (s *Store) UpsertBotProfile(profile *BotProfile) error {
+	if profile == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := cloneBotProfile(profile)
+	if cp == nil {
+		return nil
+	}
+	normalizeBotProfileValues(cp)
+	if cp.FrontendID == "" {
+		return fmt.Errorf("bot profile frontend_id is required")
+	}
+	if cp.ID == "" {
+		cp.ID = "bot-profile-" + sanitizeStateIDPart(cp.FrontendID)
+	}
+	now := time.Now().Unix()
+	if previous := s.data.BotProfiles[cp.ID]; previous != nil && cp.CreatedAt == 0 {
+		cp.CreatedAt = previous.CreatedAt
+	}
+	for id, previous := range s.data.BotProfiles {
+		if id != cp.ID && previous != nil && previous.FrontendID == cp.FrontendID {
+			delete(s.data.BotProfiles, id)
+		}
+	}
+	if cp.CreatedAt == 0 {
+		cp.CreatedAt = now
+	}
+	cp.UpdatedAt = now
+	if s.data.BotProfiles == nil {
+		s.data.BotProfiles = map[string]*BotProfile{}
+	}
+	s.data.BotProfiles[cp.ID] = cp
+	return s.saveLocked()
+}
+
+// DeleteBotProfile removes a frontend-scoped profile.
+func (s *Store) DeleteBotProfile(frontendID string) error {
+	frontendID = strings.TrimSpace(frontendID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed := false
+	for id, profile := range s.data.BotProfiles {
+		if profile != nil && profile.FrontendID == frontendID {
+			delete(s.data.BotProfiles, id)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return s.saveLocked()
+}
+
+// DeleteAgentBinding deletes a persisted binding by id.
+func (s *Store) DeleteAgentBinding(id string) error {
+	return s.DeleteScopedAgentBinding("", id)
+}
+
+// DeleteScopedAgentBinding deletes a binding only when it belongs to frontendID.
+func (s *Store) DeleteScopedAgentBinding(frontendID, id string) error {
+	frontendID = strings.TrimSpace(frontendID)
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	binding, ok := s.data.AgentBindings[id]
+	if !ok || binding == nil || (frontendID != "" && binding.FrontendID != frontendID) {
+		return nil
+	}
+	delete(s.data.AgentBindings, id)
+	return s.saveLocked()
+}
+
+// GetGroupPrimary returns a group primary record by id without frontend filtering.
+func (s *Store) GetGroupPrimary(id string) *GroupPrimary {
+	return s.GetScopedGroupPrimary("", id)
+}
+
+// GetScopedGroupPrimary returns a group primary record by id. The frontendID
+// parameter is retained for call-site compatibility; group ownership is now
+// stored once per chat in this Feidex instance.
+func (s *Store) GetScopedGroupPrimary(frontendID, id string) *GroupPrimary {
+	_ = strings.TrimSpace(frontendID)
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	primary, ok := s.data.GroupPrimaries[id]
+	if !ok || primary == nil {
+		return nil
+	}
+	return cloneGroupPrimary(primary)
+}
+
+// AllGroupPrimaries returns deep copies of all persisted group primary records.
+func (s *Store) AllGroupPrimaries() []*GroupPrimary {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneGroupPrimaries(s.data.GroupPrimaries)
+}
+
+// GroupPrimariesByChat returns primary records for one logical chat. The
+// frontendID parameter is retained for call-site compatibility and ignored.
+func (s *Store) GroupPrimariesByChat(frontendID, chatType, chatID string) []*GroupPrimary {
+	_ = strings.TrimSpace(frontendID)
+	chatType = strings.ToLower(strings.TrimSpace(chatType))
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneGroupPrimariesMatching(s.data.GroupPrimaries, func(primary *GroupPrimary) bool {
+		if primary == nil || primary.ChatID != chatID {
+			return false
+		}
+		return chatType == "" || primary.ChatType == chatType
+	})
+}
+
+// UpsertGroupPrimary persists the local owner state for a group.
+func (s *Store) UpsertGroupPrimary(primary *GroupPrimary) error {
+	if primary == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.upsertGroupPrimaryLocked(primary)
+}
+
+// EnsureGroupPrimary creates a group's initial owner record only if it is still
+// absent. A concurrent explicit owner assignment always takes precedence.
+func (s *Store) EnsureGroupPrimary(primary *GroupPrimary) (*GroupPrimary, error) {
+	cp := cloneGroupPrimary(primary)
+	if cp == nil || cp.ID == "" {
+		return nil, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if previous := s.data.GroupPrimaries[cp.ID]; previous != nil {
+		return cloneGroupPrimary(previous), nil
+	}
+	if err := s.upsertGroupPrimaryLocked(cp); err != nil {
+		return nil, err
+	}
+	return cloneGroupPrimary(s.data.GroupPrimaries[cp.ID]), nil
+}
+
+func (s *Store) upsertGroupPrimaryLocked(primary *GroupPrimary) error {
+	cp := cloneGroupPrimary(primary)
+	if cp == nil || cp.ID == "" {
+		return nil
+	}
+	normalizeGroupPrimaryValues(cp)
+	now := time.Now().Unix()
+	if previous := s.data.GroupPrimaries[cp.ID]; previous != nil && cp.CreatedAt == 0 {
+		cp.CreatedAt = previous.CreatedAt
+	}
+	for id, previous := range s.data.GroupPrimaries {
+		if id == cp.ID || previous == nil {
+			continue
+		}
+		if previous.ChatType == cp.ChatType && previous.ChatID == cp.ChatID {
+			return fmt.Errorf("group primary already exists for chat %q: %s", cp.ChatID, id)
+		}
+	}
+	if cp.CreatedAt == 0 {
+		cp.CreatedAt = now
+	}
+	cp.UpdatedAt = now
+	if s.data.GroupPrimaries == nil {
+		s.data.GroupPrimaries = map[string]*GroupPrimary{}
+	}
+	s.data.GroupPrimaries[cp.ID] = cp
+	return s.saveLocked()
+}
+
+// UpsertScopedGroupPrimary persists a group primary record. The frontendID
+// parameter is retained for call-site compatibility and ignored.
+func (s *Store) UpsertScopedGroupPrimary(frontendID string, primary *GroupPrimary) error {
+	if primary == nil {
+		return nil
+	}
+	_ = strings.TrimSpace(frontendID)
+	cp := cloneGroupPrimary(primary)
+	if cp == nil {
+		return nil
+	}
+	return s.UpsertGroupPrimary(cp)
+}
+
 func (s *Store) GetSession(key string) *Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -262,6 +751,91 @@ func (s *Store) GetSession(key string) *Session {
 		return cloneSession(sess)
 	}
 	return nil
+}
+
+// CanonicalizeSessionKeys rewrites persisted session identity keys after app
+// code has resolved the current canonical key shape. It also updates pending
+// binding message references because those are persisted inside agent bindings.
+func (s *Store) CanonicalizeSessionKeys(canonical func(key, chatType, chatID, frontendID string) string) error {
+	if canonical == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed := false
+	nextRuntime := make(map[string]*Session, len(s.runtime.Sessions))
+	for key, sess := range s.runtime.Sessions {
+		if sess == nil {
+			continue
+		}
+		cp := cloneSession(sess)
+		if cp == nil {
+			continue
+		}
+		oldKey := strings.TrimSpace(firstNonEmptyString(cp.Key, key))
+		chatType := strings.TrimSpace(cp.ChatType)
+		chatID := strings.TrimSpace(cp.ChatID)
+		if chatType == "" || chatID == "" {
+			if keyChatType, keyChatID, _, ok := sessionContextFromKey(oldKey); ok {
+				chatType = firstNonEmptyString(chatType, keyChatType)
+				chatID = firstNonEmptyString(chatID, keyChatID)
+			}
+		}
+		newKey := strings.TrimSpace(canonical(oldKey, chatType, chatID, ""))
+		if newKey == "" {
+			newKey = oldKey
+		}
+		if newKey != oldKey {
+			changed = true
+		}
+		cp.Key = newKey
+		if chatType != "" {
+			cp.ChatType = chatType
+		}
+		if chatID != "" {
+			cp.ChatID = chatID
+		}
+		normalizeSessionValues(cp)
+		if existing := nextRuntime[newKey]; existing != nil {
+			changed = true
+			nextRuntime[newKey] = mergeSessions(existing, cp)
+			continue
+		}
+		nextRuntime[newKey] = cp
+	}
+	for _, binding := range s.data.AgentBindings {
+		if binding == nil {
+			continue
+		}
+		pendingMessages := binding.PendingMessages
+		if len(pendingMessages) == 0 && binding.PendingMessage != nil {
+			pendingMessages = []*AgentBindingPendingMessage{binding.PendingMessage}
+		}
+		for _, pending := range pendingMessages {
+			if pending == nil {
+				continue
+			}
+			oldKey := strings.TrimSpace(pending.SessionKey)
+			newKey := strings.TrimSpace(canonical(oldKey, pending.ChatType, pending.ChatID, binding.FrontendID))
+			if newKey != "" && newKey != oldKey {
+				pending.SessionKey = newKey
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return nil
+	}
+	s.runtime.Sessions = nextRuntime
+	s.data.Sessions = make(map[string]*storedSession, len(nextRuntime))
+	for key, sess := range nextRuntime {
+		if sess == nil {
+			continue
+		}
+		sess.Key = key
+		s.syncPersistentSessionLocked(sess)
+	}
+	return s.saveLocked()
 }
 
 func (s *Store) UpsertSession(sess *Session) error {
@@ -276,7 +850,7 @@ func (s *Store) UpsertSession(sess *Session) error {
 	}
 	normalizeSessionValues(cp)
 	cp.UpdatedAt = time.Now().Unix()
-	s.runtime.Sessions[sess.Key] = cp
+	s.runtime.Sessions[cp.Key] = cp
 	s.syncPersistentSessionLocked(cp)
 	return s.saveLocked()
 }
@@ -544,6 +1118,368 @@ func cloneFrontendCardNotifications(src []FrontendCardNotification) []FrontendCa
 	return dst
 }
 
+func cloneAgentBinding(binding *AgentBinding) *AgentBinding {
+	if binding == nil {
+		return nil
+	}
+	cp := *binding
+	cp.PendingMessage = cloneAgentBindingPendingMessage(binding.PendingMessage)
+	if len(binding.PendingMessages) > 0 {
+		cp.PendingMessages = make([]*AgentBindingPendingMessage, 0, len(binding.PendingMessages))
+		for _, pending := range binding.PendingMessages {
+			if cloned := cloneAgentBindingPendingMessage(pending); cloned != nil {
+				cp.PendingMessages = append(cp.PendingMessages, cloned)
+			}
+		}
+	}
+	normalizeAgentBindingValues(&cp)
+	return &cp
+}
+
+func cloneBotProfile(profile *BotProfile) *BotProfile {
+	if profile == nil {
+		return nil
+	}
+	cp := *profile
+	normalizeBotProfileValues(&cp)
+	return &cp
+}
+
+func cloneBotProfiles(src map[string]*BotProfile) []*BotProfile {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]*BotProfile, 0, len(src))
+	for _, profile := range src {
+		if profile != nil {
+			out = append(out, cloneBotProfile(profile))
+		}
+	}
+	slices.SortFunc(out, func(a, b *BotProfile) int { return strings.Compare(a.ID, b.ID) })
+	return out
+}
+
+func cloneAgentBindingPendingMessage(msg *AgentBindingPendingMessage) *AgentBindingPendingMessage {
+	if msg == nil {
+		return nil
+	}
+	cp := *msg
+	cp.Attachments = append([]AgentBindingPendingAttachment(nil), msg.Attachments...)
+	cp.MergeForwardMessageIDs = append([]string(nil), msg.MergeForwardMessageIDs...)
+	cp.MentionedOpenIDs = append([]string(nil), msg.MentionedOpenIDs...)
+	return &cp
+}
+
+func cloneAgentBindings(src map[string]*AgentBinding) []*AgentBinding {
+	return cloneAgentBindingsMatching(src, func(*AgentBinding) bool { return true })
+}
+
+func cloneAgentBindingsMatching(src map[string]*AgentBinding, match func(*AgentBinding) bool) []*AgentBinding {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]*AgentBinding, 0, len(src))
+	for _, binding := range src {
+		if binding == nil || (match != nil && !match(binding)) {
+			continue
+		}
+		out = append(out, cloneAgentBinding(binding))
+	}
+	slices.SortFunc(out, func(a, b *AgentBinding) int {
+		return strings.Compare(a.ID, b.ID)
+	})
+	return out
+}
+
+func cloneGroupPrimary(primary *GroupPrimary) *GroupPrimary {
+	if primary == nil {
+		return nil
+	}
+	cp := *primary
+	normalizeGroupPrimaryValues(&cp)
+	return &cp
+}
+
+func cloneGroupPrimaries(src map[string]*GroupPrimary) []*GroupPrimary {
+	return cloneGroupPrimariesMatching(src, func(*GroupPrimary) bool { return true })
+}
+
+func cloneGroupPrimariesMatching(src map[string]*GroupPrimary, match func(*GroupPrimary) bool) []*GroupPrimary {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]*GroupPrimary, 0, len(src))
+	for _, primary := range src {
+		if primary == nil || (match != nil && !match(primary)) {
+			continue
+		}
+		out = append(out, cloneGroupPrimary(primary))
+	}
+	slices.SortFunc(out, func(a, b *GroupPrimary) int {
+		return strings.Compare(a.ID, b.ID)
+	})
+	return out
+}
+
+func normalizeAgentBindingValues(binding *AgentBinding) bool {
+	if binding == nil {
+		return false
+	}
+	beforeJSON, _ := json.Marshal(binding)
+	binding.ID = strings.TrimSpace(binding.ID)
+	binding.FrontendID = strings.TrimSpace(binding.FrontendID)
+	binding.ChatID = strings.TrimSpace(binding.ChatID)
+	binding.ChatType = strings.ToLower(strings.TrimSpace(binding.ChatType))
+	binding.WorkspaceID = strings.TrimSpace(binding.WorkspaceID)
+	binding.ModelOverride = strings.TrimSpace(binding.ModelOverride)
+	binding.ReasoningEffortOverride = strings.TrimSpace(binding.ReasoningEffortOverride)
+	binding.ServiceTierOverride = normalizeStoredServiceTier(binding.ServiceTierOverride)
+	binding.SandboxModeOverride = strings.TrimSpace(binding.SandboxModeOverride)
+	binding.ApprovalPolicyOverride = strings.TrimSpace(binding.ApprovalPolicyOverride)
+	binding.MultiAgentModeOverride = strings.TrimSpace(binding.MultiAgentModeOverride)
+	binding.ClaudePermissionMode = strings.TrimSpace(binding.ClaudePermissionMode)
+	binding.PendingMessage = normalizeAgentBindingPendingMessage(binding.PendingMessage)
+	queue := make([]*AgentBindingPendingMessage, 0, len(binding.PendingMessages))
+	for _, pending := range binding.PendingMessages {
+		if normalized := normalizeAgentBindingPendingMessage(pending); normalized != nil {
+			queue = append(queue, normalized)
+		}
+	}
+	if len(queue) == 0 && binding.PendingMessage != nil {
+		// Legacy snapshots had a single pending_message. Migrate it once into
+		// the new queue; subsequent queue mutations must not resurrect it.
+		queue = append(queue, binding.PendingMessage)
+	}
+	binding.PendingMessages = queue
+	if len(queue) > 0 {
+		binding.PendingMessage = queue[0]
+	} else {
+		binding.PendingMessage = nil
+	}
+	binding.Status = NormalizeAgentBindingStatus(binding.Status).String()
+	if binding.UpdatedAt == 0 && binding.CreatedAt != 0 {
+		binding.UpdatedAt = binding.CreatedAt
+	}
+	afterJSON, _ := json.Marshal(binding)
+	return string(beforeJSON) != string(afterJSON)
+}
+
+func normalizeBotProfileValues(profile *BotProfile) bool {
+	if profile == nil {
+		return false
+	}
+	before := *profile
+	profile.ID = strings.TrimSpace(profile.ID)
+	profile.FrontendID = strings.TrimSpace(profile.FrontendID)
+	profile.WorkspaceID = strings.TrimSpace(profile.WorkspaceID)
+	profile.Model = strings.TrimSpace(profile.Model)
+	profile.ReasoningEffort = strings.TrimSpace(profile.ReasoningEffort)
+	profile.ServiceTier = normalizeStoredServiceTier(profile.ServiceTier)
+	profile.SandboxMode = strings.TrimSpace(profile.SandboxMode)
+	profile.ApprovalPolicy = strings.TrimSpace(profile.ApprovalPolicy)
+	profile.MultiAgentMode = strings.TrimSpace(profile.MultiAgentMode)
+	profile.ClaudeModel = strings.TrimSpace(profile.ClaudeModel)
+	profile.ClaudePermissionMode = strings.TrimSpace(profile.ClaudePermissionMode)
+	if profile.UpdatedAt == 0 && profile.CreatedAt != 0 {
+		profile.UpdatedAt = profile.CreatedAt
+	}
+	return before != *profile
+}
+
+func normalizeGroupPrimaryValues(primary *GroupPrimary) bool {
+	if primary == nil {
+		return false
+	}
+	before := *primary
+	primary.ID = strings.TrimSpace(primary.ID)
+	primary.ChatID = strings.TrimSpace(primary.ChatID)
+	primary.ChatType = strings.ToLower(strings.TrimSpace(primary.ChatType))
+	primary.OwnerBotOpenID = strings.TrimSpace(primary.OwnerBotOpenID)
+	if primary.UpdatedAt == 0 && primary.CreatedAt != 0 {
+		primary.UpdatedAt = primary.CreatedAt
+	}
+	return before != *primary
+}
+
+func normalizeAgentBindingPendingMessage(msg *AgentBindingPendingMessage) *AgentBindingPendingMessage {
+	if msg == nil {
+		return nil
+	}
+	cp := cloneAgentBindingPendingMessage(msg)
+	cp.SessionKey = strings.TrimSpace(cp.SessionKey)
+	cp.MessageID = strings.TrimSpace(cp.MessageID)
+	cp.ChatID = strings.TrimSpace(cp.ChatID)
+	cp.ChatType = strings.ToLower(strings.TrimSpace(cp.ChatType))
+	cp.UserID = strings.TrimSpace(cp.UserID)
+	cp.UserName = strings.TrimSpace(cp.UserName)
+	cp.ChatName = strings.TrimSpace(cp.ChatName)
+	cp.RootMessageID = strings.TrimSpace(cp.RootMessageID)
+	cp.ParentMessageID = strings.TrimSpace(cp.ParentMessageID)
+	cp.ThreadID = strings.TrimSpace(cp.ThreadID)
+	cp.MergeForwardMessageIDs = normalizeStringSlice(cp.MergeForwardMessageIDs)
+	cp.MentionedOpenIDs = normalizeStringSlice(cp.MentionedOpenIDs)
+	attachments := make([]AgentBindingPendingAttachment, 0, len(cp.Attachments))
+	for _, attachment := range cp.Attachments {
+		attachment.Kind = strings.TrimSpace(attachment.Kind)
+		attachment.ResourceKey = strings.TrimSpace(attachment.ResourceKey)
+		attachment.SourceMessageID = strings.TrimSpace(attachment.SourceMessageID)
+		if attachment.Kind == "" && attachment.ResourceKey == "" && attachment.SourceMessageID == "" {
+			continue
+		}
+		attachments = append(attachments, attachment)
+	}
+	cp.Attachments = attachments
+	if cp.MessageID == "" && strings.TrimSpace(cp.Text) == "" && len(cp.Attachments) == 0 && len(cp.MergeForwardMessageIDs) == 0 {
+		return nil
+	}
+	return cp
+}
+
+func normalizeStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizeAgentBindings(src map[string]*AgentBinding) map[string]*AgentBinding {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]*AgentBinding, len(src))
+	for key, binding := range src {
+		cp := cloneAgentBinding(binding)
+		if cp == nil {
+			continue
+		}
+		if cp.ID == "" {
+			cp.ID = strings.TrimSpace(key)
+		}
+		if cp.ID == "" {
+			continue
+		}
+		dst[cp.ID] = cp
+	}
+	if len(dst) == 0 {
+		return nil
+	}
+	return dst
+}
+
+func normalizeBotProfiles(src map[string]*BotProfile) map[string]*BotProfile {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]*BotProfile, len(src))
+	for key, profile := range src {
+		cp := cloneBotProfile(profile)
+		if cp == nil {
+			continue
+		}
+		if cp.ID == "" {
+			cp.ID = strings.TrimSpace(key)
+		}
+		if cp.ID == "" || cp.FrontendID == "" {
+			continue
+		}
+		dst[cp.ID] = cp
+	}
+	if len(dst) == 0 {
+		return nil
+	}
+	return dst
+}
+
+func normalizeGroupPrimaries(src map[string]*GroupPrimary) map[string]*GroupPrimary {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]*GroupPrimary, len(src))
+	for key, primary := range src {
+		cp := cloneGroupPrimary(primary)
+		if cp == nil {
+			continue
+		}
+		if cp.ID == "" {
+			cp.ID = strings.TrimSpace(key)
+		}
+		if cp.ID == "" {
+			continue
+		}
+		dst[cp.ID] = cp
+	}
+	if len(dst) == 0 {
+		return nil
+	}
+	return dst
+}
+
+func agentBindingsEqual(a, b map[string]*AgentBinding) bool {
+	ab, err := json.Marshal(a)
+	if err != nil {
+		return false
+	}
+	bb, err := json.Marshal(b)
+	if err != nil {
+		return false
+	}
+	return string(ab) == string(bb)
+}
+
+func botProfilesEqual(a, b map[string]*BotProfile) bool {
+	ab, err := json.Marshal(a)
+	if err != nil {
+		return false
+	}
+	bb, err := json.Marshal(b)
+	if err != nil {
+		return false
+	}
+	return string(ab) == string(bb)
+}
+
+func groupPrimariesEqual(a, b map[string]*GroupPrimary) bool {
+	ab, err := json.Marshal(a)
+	if err != nil {
+		return false
+	}
+	bb, err := json.Marshal(b)
+	if err != nil {
+		return false
+	}
+	return string(ab) == string(bb)
+}
+
+func sanitizeStateIDPart(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "default"
+	}
+	var b strings.Builder
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "default"
+	}
+	return b.String()
+}
+
 func normalizeFrontendCardNotification(note FrontendCardNotification) (FrontendCardNotification, bool) {
 	note.Kind = strings.TrimSpace(note.Kind)
 	note.CollapseKey = strings.TrimSpace(note.CollapseKey)
@@ -585,9 +1521,21 @@ func normalizeSessionValues(sess *Session) bool {
 	if sess == nil {
 		return false
 	}
+	before := *sess
 	normalizedServiceTier := normalizeStoredServiceTier(sess.ActiveThreadServiceTier)
 	changed := sess.ActiveThreadServiceTier != normalizedServiceTier
 	sess.ActiveThreadServiceTier = normalizedServiceTier
+	if chatType, chatID, rootMessageID, ok := sessionContextFromKey(sess.Key); ok {
+		if strings.TrimSpace(sess.ChatType) == "" {
+			sess.ChatType = chatType
+		}
+		if strings.TrimSpace(sess.ChatID) == "" {
+			sess.ChatID = chatID
+		}
+		if strings.TrimSpace(sess.RootMessageID) == "" {
+			sess.RootMessageID = rootMessageID
+		}
+	}
 	normalizedStatus := NormalizeSessionStatus(sess.Status).String()
 	if sess.Status != normalizedStatus {
 		changed = true
@@ -603,7 +1551,7 @@ func normalizeSessionValues(sess *Session) bool {
 		changed = true
 	}
 	sess.ActiveThreadCollaborationMode = normalizedCollaborationMode
-	return changed
+	return changed || before.ChatType != sess.ChatType || before.ChatID != sess.ChatID || before.RootMessageID != sess.RootMessageID || before.BindingID != sess.BindingID
 }
 
 func normalizeSubmissionValues(sub *Submission) {
@@ -631,11 +1579,16 @@ func storedSessionFromSession(sess *Session) *storedSession {
 	normalizeSessionValues(cp)
 	return &storedSession{
 		Key:                           cp.Key,
+		BindingID:                     cp.BindingID,
 		WorkspaceID:                   cp.WorkspaceID,
+		ChatID:                        cp.ChatID,
+		ChatType:                      cp.ChatType,
+		RootMessageID:                 cp.RootMessageID,
 		ActiveThreadID:                cp.ActiveThreadID,
 		ActiveThreadWorkspaceID:       cp.ActiveThreadWorkspaceID,
 		ActiveThreadApprovalPolicy:    cp.ActiveThreadApprovalPolicy,
 		ActiveThreadSandboxMode:       cp.ActiveThreadSandboxMode,
+		ActiveThreadMultiAgentMode:    cp.ActiveThreadMultiAgentMode,
 		ActiveClaudePermissionMode:    cp.ActiveClaudePermissionMode,
 		ActiveThreadServiceTier:       cp.ActiveThreadServiceTier,
 		ActiveThreadCollaborationMode: cloneSessionCollaborationMode(cp.ActiveThreadCollaborationMode),
@@ -655,11 +1608,16 @@ func sessionFromStored(sess *storedSession) *Session {
 	}
 	cp := &Session{
 		Key:                           sess.Key,
+		BindingID:                     strings.TrimSpace(sess.BindingID),
 		WorkspaceID:                   sess.WorkspaceID,
+		ChatID:                        strings.TrimSpace(sess.ChatID),
+		ChatType:                      strings.ToLower(strings.TrimSpace(sess.ChatType)),
+		RootMessageID:                 strings.TrimSpace(sess.RootMessageID),
 		ActiveThreadID:                sess.ActiveThreadID,
 		ActiveThreadWorkspaceID:       sess.ActiveThreadWorkspaceID,
 		ActiveThreadApprovalPolicy:    sess.ActiveThreadApprovalPolicy,
 		ActiveThreadSandboxMode:       sess.ActiveThreadSandboxMode,
+		ActiveThreadMultiAgentMode:    sess.ActiveThreadMultiAgentMode,
 		ActiveClaudePermissionMode:    sess.ActiveClaudePermissionMode,
 		ActiveThreadServiceTier:       sess.ActiveThreadServiceTier,
 		ActiveThreadCollaborationMode: cloneSessionCollaborationMode(sess.ActiveThreadCollaborationMode),
@@ -673,9 +1631,15 @@ func sessionFromStored(sess *storedSession) *Session {
 		UpdatedAt:                     sess.UpdatedAt,
 	}
 	if chatType, chatID, rootMessageID, ok := sessionContextFromKey(sess.Key); ok {
-		cp.ChatType = chatType
-		cp.ChatID = chatID
-		cp.RootMessageID = rootMessageID
+		if strings.TrimSpace(cp.ChatType) == "" {
+			cp.ChatType = chatType
+		}
+		if strings.TrimSpace(cp.ChatID) == "" {
+			cp.ChatID = chatID
+		}
+		if strings.TrimSpace(cp.RootMessageID) == "" {
+			cp.RootMessageID = rootMessageID
+		}
 	}
 	normalizeSessionValues(cp)
 	return cp
@@ -686,6 +1650,10 @@ func normalizeStoredSession(sess *storedSession) *storedSession {
 		return nil
 	}
 	cp := *sess
+	cp.BindingID = strings.TrimSpace(cp.BindingID)
+	cp.ChatID = strings.TrimSpace(cp.ChatID)
+	cp.ChatType = strings.ToLower(strings.TrimSpace(cp.ChatType))
+	cp.RootMessageID = strings.TrimSpace(cp.RootMessageID)
 	cp.ActiveClaudePermissionMode = strings.TrimSpace(cp.ActiveClaudePermissionMode)
 	cp.ActiveThreadServiceTier = normalizeStoredServiceTier(cp.ActiveThreadServiceTier)
 	cp.ActiveThreadCollaborationMode = normalizeSessionCollaborationMode(cp.ActiveThreadCollaborationMode)
@@ -768,6 +1736,7 @@ func normalizeSessionBackendThread(thread SessionBackendThread) SessionBackendTh
 	thread.WorkspaceID = strings.TrimSpace(thread.WorkspaceID)
 	thread.ApprovalPolicy = strings.TrimSpace(thread.ApprovalPolicy)
 	thread.SandboxMode = strings.TrimSpace(thread.SandboxMode)
+	thread.MultiAgentMode = strings.TrimSpace(thread.MultiAgentMode)
 	thread.ClaudePermissionMode = strings.TrimSpace(thread.ClaudePermissionMode)
 	thread.ServiceTier = normalizeStoredServiceTier(thread.ServiceTier)
 	thread.CollaborationMode = normalizeSessionCollaborationMode(thread.CollaborationMode)
@@ -825,19 +1794,45 @@ func storedSessionsEqual(a, b *storedSession) bool {
 func sessionContextFromKey(key string) (chatType, chatID, rootMessageID string, ok bool) {
 	key = strings.TrimSpace(key)
 	parts := strings.Split(key, ":")
-	if len(parts) < 4 || parts[0] != "feishu" {
+	if len(parts) < 2 || parts[0] != "feishu" {
 		return "", "", "", false
 	}
+	if len(parts) == 2 {
+		chatID = strings.TrimSpace(parts[1])
+		return "", chatID, "", chatID != ""
+	}
+	if parts[1] == "chat" {
+		if len(parts) > 2 {
+			chatID = strings.TrimSpace(parts[2])
+			return "", chatID, "", chatID != ""
+		}
+		return "", "", "", false
+	}
+	if len(parts) >= 3 && parts[1] != "frontend" && parts[1] != "group" && parts[1] != "p2p" {
+		chatID = strings.TrimSpace(parts[2])
+		return "", chatID, "", chatID != ""
+	}
 	offset := 1
-	if len(parts) >= 6 && parts[1] == "frontend" {
+	if len(parts) > 3 && parts[1] == "frontend" {
 		offset = 3
 	}
+	if offset >= len(parts) {
+		return "", "", "", false
+	}
 	switch parts[offset] {
-	case "group":
-		if len(parts) <= offset+3 || strings.TrimSpace(parts[offset+1]) == "" || parts[offset+2] != "root" {
+	case "chat":
+		if len(parts) <= offset+1 || strings.TrimSpace(parts[offset+1]) == "" {
 			return "", "", "", false
 		}
-		return "group", strings.TrimSpace(parts[offset+1]), strings.TrimSpace(parts[offset+3]), true
+		return "", strings.TrimSpace(parts[offset+1]), "", true
+	case "group":
+		if len(parts) <= offset+1 || strings.TrimSpace(parts[offset+1]) == "" {
+			return "", "", "", false
+		}
+		if len(parts) > offset+3 && parts[offset+2] == "root" {
+			return "group", strings.TrimSpace(parts[offset+1]), strings.TrimSpace(parts[offset+3]), true
+		}
+		return "group", strings.TrimSpace(parts[offset+1]), "", true
 	case "p2p":
 		if len(parts) <= offset+2 || strings.TrimSpace(parts[offset+1]) == "" {
 			return "", "", "", false
@@ -930,6 +1925,139 @@ func (s *Store) DeleteMessageLinks(match func(*MessageLink) bool) {
 			delete(s.runtime.MessageLinks, id)
 		}
 	}
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func mergeSessions(a, b *Session) *Session {
+	if a == nil {
+		return cloneSession(b)
+	}
+	if b == nil {
+		return cloneSession(a)
+	}
+	primary := cloneSession(a)
+	secondary := cloneSession(b)
+	if secondary.UpdatedAt > primary.UpdatedAt {
+		primary, secondary = secondary, primary
+	}
+	fillSessionBlanks(primary, secondary)
+	primary.Queue = appendUniqueStrings(primary.Queue, secondary.Queue...)
+	primary.ActiveOperations = append(primary.ActiveOperations, secondary.ActiveOperations...)
+	primary.StagedImages = append(primary.StagedImages, secondary.StagedImages...)
+	primary.RecentWorkspaceIDs = appendUniqueStrings(primary.RecentWorkspaceIDs, secondary.RecentWorkspaceIDs...)
+	primary.BackendThreads = mergeSessionBackendThreadMaps(secondary.BackendThreads, primary.BackendThreads)
+	return primary
+}
+
+func fillSessionBlanks(dst, src *Session) {
+	if dst == nil || src == nil {
+		return
+	}
+	if strings.TrimSpace(dst.BindingID) == "" {
+		dst.BindingID = src.BindingID
+	}
+	if strings.TrimSpace(dst.WorkspaceID) == "" {
+		dst.WorkspaceID = src.WorkspaceID
+	}
+	if strings.TrimSpace(dst.ChatID) == "" {
+		dst.ChatID = src.ChatID
+	}
+	if strings.TrimSpace(dst.ChatType) == "" {
+		dst.ChatType = src.ChatType
+	}
+	if strings.TrimSpace(dst.RootMessageID) == "" {
+		dst.RootMessageID = src.RootMessageID
+	}
+	if strings.TrimSpace(dst.ActiveThreadID) == "" {
+		dst.ActiveThreadID = src.ActiveThreadID
+	}
+	if strings.TrimSpace(dst.ActiveThreadWorkspaceID) == "" {
+		dst.ActiveThreadWorkspaceID = src.ActiveThreadWorkspaceID
+	}
+	if strings.TrimSpace(dst.ActiveThreadApprovalPolicy) == "" {
+		dst.ActiveThreadApprovalPolicy = src.ActiveThreadApprovalPolicy
+	}
+	if strings.TrimSpace(dst.ActiveThreadSandboxMode) == "" {
+		dst.ActiveThreadSandboxMode = src.ActiveThreadSandboxMode
+	}
+	if strings.TrimSpace(dst.ActiveThreadMultiAgentMode) == "" {
+		dst.ActiveThreadMultiAgentMode = src.ActiveThreadMultiAgentMode
+	}
+	if strings.TrimSpace(dst.ActiveClaudePermissionMode) == "" {
+		dst.ActiveClaudePermissionMode = src.ActiveClaudePermissionMode
+	}
+	if strings.TrimSpace(dst.ActiveThreadServiceTier) == "" {
+		dst.ActiveThreadServiceTier = src.ActiveThreadServiceTier
+	}
+	if dst.ActiveThreadCollaborationMode == nil {
+		dst.ActiveThreadCollaborationMode = cloneSessionCollaborationMode(src.ActiveThreadCollaborationMode)
+	}
+	if strings.TrimSpace(dst.ActiveThreadName) == "" {
+		dst.ActiveThreadName = src.ActiveThreadName
+	}
+	if strings.TrimSpace(dst.ActiveThreadPreview) == "" {
+		dst.ActiveThreadPreview = src.ActiveThreadPreview
+	}
+	if strings.TrimSpace(dst.ActiveTurnID) == "" {
+		dst.ActiveTurnID = src.ActiveTurnID
+	}
+	if strings.TrimSpace(dst.ActiveSubmissionID) == "" {
+		dst.ActiveSubmissionID = src.ActiveSubmissionID
+	}
+	if strings.TrimSpace(dst.OwnerUserID) == "" {
+		dst.OwnerUserID = src.OwnerUserID
+	}
+	if strings.TrimSpace(dst.ModelOverride) == "" {
+		dst.ModelOverride = src.ModelOverride
+	}
+	if strings.TrimSpace(dst.Status) == "" || strings.TrimSpace(dst.Status) == SessionStatusIdle.String() && strings.TrimSpace(src.Status) != "" {
+		dst.Status = src.Status
+	}
+}
+
+func appendUniqueStrings(values []string, more ...string) []string {
+	out := append([]string(nil), values...)
+	seen := make(map[string]struct{}, len(out)+len(more))
+	for _, value := range out {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			seen[value] = struct{}{}
+		}
+	}
+	for _, value := range more {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		out = append(out, value)
+		seen[value] = struct{}{}
+	}
+	return out
+}
+
+func mergeSessionBackendThreadMaps(base, overlay map[string]SessionBackendThread) map[string]SessionBackendThread {
+	if len(base) == 0 && len(overlay) == 0 {
+		return nil
+	}
+	out := cloneSessionBackendThreads(base)
+	if out == nil {
+		out = map[string]SessionBackendThread{}
+	}
+	for key, value := range overlay {
+		out[key] = value
+	}
+	return out
 }
 
 func (s *Store) ensureSessionLocked(key string) *Session {

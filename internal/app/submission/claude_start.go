@@ -74,7 +74,7 @@ func (s SubmissionQueueService) StartNextClaudeSubmissionWithFailureNoticeEx(ses
 		return err
 	}
 
-	model := firstNonEmpty(strings.TrimSpace(sess.ModelOverride), strings.TrimSpace(ws.Model), strings.TrimSpace(a.SubmissionQueueConfiguredClaudeModel()))
+	model := effectiveClaudeModel(a, sess, sub, ws)
 	ensureCtx, ensureCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	resumeThreadID := threadID
 	claudeThreadID, err := claude.EnsureSession(ensureCtx, sessionKey, ws, resumeThreadID, model)
@@ -322,11 +322,7 @@ func (s SubmissionQueueService) bindClaudeSubmissionStartState(sessionKey string
 		return nil, err
 	}
 	a.SubmissionQueueReplyContinuation().RecordSubmissionSourceLinks(sub)
-	rootMessageID := ""
-	if updatedSess != nil {
-		rootMessageID = strings.TrimSpace(updatedSess.RootMessageID)
-	}
-	a.SubmissionQueueReplyContinuation().RecordRootTurnBinding(rootMessageID, sessionKey, claudeThreadID, turnID)
+	recordLegacySessionRootTurnBinding(a.SubmissionQueueReplyContinuation(), updatedSess, sub, sessionKey, claudeThreadID, turnID)
 	a.SubmissionQueueTurnStream().NoteTurnStarted(sessionKey, sub)
 	if strings.TrimSpace(claudeThreadID) != "" {
 		a.SubmissionQueueLiveThread().MarkSessionThreadLive(sessionKey, claudeThreadID)

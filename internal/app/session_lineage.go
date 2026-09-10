@@ -34,11 +34,20 @@ func markSessionThreadLive(a *App, sessionKey, threadID string) {
 	}
 	tracker := getAppLiveThreadTracker(a)
 	tracker.mu.Lock()
-	defer tracker.mu.Unlock()
 	if tracker.threads == nil {
 		tracker.threads = map[string]string{}
 	}
 	tracker.threads[strings.TrimSpace(sessionKey)] = strings.TrimSpace(threadID)
+	tracker.mu.Unlock()
+	if sess := a.State().Session(sessionKey); sess != nil {
+		chatID := strings.TrimSpace(sess.ChatID)
+		if chatID == "" {
+			_, _, chatID, _, _ = parseSessionKey(sess.Key)
+		}
+		if sessionMatchesGroupChat(a, sess, chatID) {
+			scheduleGroupAnnouncementStatusRefresh(a, chatID, "thread_live")
+		}
+	}
 }
 
 func sessionHasLiveThread(a *App, sessionKey, threadID string) bool {
@@ -93,6 +102,10 @@ func effectiveThreadSandboxMode(sess *state.Session, ws *config.Workspace) strin
 
 func effectiveThreadServiceTier(sess *state.Session) string {
 	return sessionctx.EffectiveServiceTier(sess)
+}
+
+func effectiveThreadMultiAgentMode(sess *state.Session, ws *config.Workspace) string {
+	return sessionctx.EffectiveMultiAgentMode(sess, ws)
 }
 
 func normalizeClaudePermissionModeValue(value string) string {

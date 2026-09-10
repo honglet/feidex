@@ -52,14 +52,14 @@ func TestHandleFeishuMessageAdditionalBranches(t *testing.T) {
 	}
 
 	a.HandleFeishuMessage(&feishu.InboundMessage{MessageID: "stale", CreatedAt: a.started.Add(-time.Minute).Unix()})
-	if a.store.GetSession("feishu:p2p::") != nil {
+	if got := a.store.AllSessions(); len(got) != 0 {
 		t.Fatal("stale message should be ignored")
 	}
 
 	_ = a.deduper.Claim("dup")
 	a.HandleFeishuMessage(&feishu.InboundMessage{MessageID: "dup"})
 
-	sessionKey := "feishu:p2p:chat:user"
+	sessionKey := "feishu:chat:chat"
 	if err := a.store.UpsertSession(&state.Session{
 		Key:            sessionKey,
 		WorkspaceID:    "default",
@@ -139,6 +139,22 @@ func TestHandleFeishuMessageAdditionalBranches(t *testing.T) {
 	})
 	if len(ff.replyTexts) == 0 && len(ff.sentTexts) == 0 {
 		t.Fatal("attachment error should trigger replyError fallback")
+	}
+}
+
+func TestRemovedBindSlashIsNotRegisteredAsLocalCommand(t *testing.T) {
+	removed := "/" + "bind"
+	if spec := findLocalCommandSpec(removed); spec != nil {
+		t.Fatalf("removed command still registered: %+v", spec)
+	}
+	if isLocalCommandForBackend(backendCodex, removed) {
+		t.Fatal("removed command should not be local on Codex")
+	}
+	if isLocalCommandForBackend(backendClaude, removed) {
+		t.Fatal("removed command should not be local on Claude")
+	}
+	if commandAllowedWithoutBackend(&feishu.InboundMessage{ChatType: "group", ChatID: "chat"}, removed) {
+		t.Fatal("removed command should not bypass backend selection")
 	}
 }
 

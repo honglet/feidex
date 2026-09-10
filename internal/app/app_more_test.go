@@ -167,6 +167,7 @@ func (f *fakeDaemonManagerForApp) Status() (*daemon.Status, error) {
 	return f.status, f.err
 }
 func (f *fakeDaemonManagerForApp) Platform() string { return "test" }
+func (f *fakeDaemonManagerForApp) LogFile() string  { return "" }
 
 func (f *fakeCodexClient) SetHandlers(onNotification func(string, json.RawMessage), onRequest func(codexrpc.RequestEnvelope)) {
 	f.mu.Lock()
@@ -282,6 +283,7 @@ type fakeFeishuClient struct {
 	shareFileErr              error
 	urgentAppErr              error
 	lookupMessageSenderErr    error
+	getGroupBotCountErr       error
 	cleanupResult             feishu.PreviewDriveCleanupResult
 	cleanupErr                error
 	cleanupHook               func(context.Context, time.Time) (feishu.PreviewDriveCleanupResult, error)
@@ -323,13 +325,39 @@ type fakeFeishuClient struct {
 	urgentAppCalls           []struct{ messageID, userID string }
 	lookupMessageSenderCalls []string
 	lookupMessageSenderOpen  string
+	botOpenID                string
+	botName                  string
+	groupBotCounts           map[string]int
+	groupBotCountCalls       []string
+	announcementBlocks       []feishu.AnnouncementBlock
+	announcementListErr      error
+	announcementCreateErr    error
+	announcementUpdateErr    error
+	announcementListCalls    []string
+	announcementCreateCalls  []fakeAnnouncementCreateCall
+	announcementUpdateCalls  []struct{ chatID, blockID, content, clientToken string }
 	onMessage                func(*feishu.InboundMessage)
+	onBotAdded               func(*feishu.BotGroupEvent)
+}
+
+type fakeAnnouncementCreateCall struct {
+	chatID        string
+	parentBlockID string
+	content       string
+	clientToken   string
+	index         *int
 }
 
 func (f *fakeFeishuClient) SetHandlers(onMessage func(*feishu.InboundMessage), _ func(*feishu.CardAction) (*callback.CardActionTriggerResponse, error), _ func(*feishu.BotMenuClick), _ func(*feishu.MessageRecall), _ func(*feishu.MessageReaction)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.onMessage = onMessage
+}
+
+func (f *fakeFeishuClient) SetBotGroupAddedHandler(handler func(*feishu.BotGroupEvent)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.onBotAdded = handler
 }
 
 func (f *fakeFeishuClient) Start(context.Context) error {
@@ -523,6 +551,99 @@ func (f *fakeFeishuClient) LookupMessageSenderOpenID(_ context.Context, messageI
 	return f.lookupMessageSenderOpen, f.lookupMessageSenderErr
 }
 
+func (f *fakeFeishuClient) GetGroupBotCount(_ context.Context, chatID string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.groupBotCountCalls = append(f.groupBotCountCalls, chatID)
+	if f.getGroupBotCountErr != nil {
+		return 0, f.getGroupBotCountErr
+	}
+	if f.groupBotCounts != nil {
+		return f.groupBotCounts[chatID], nil
+	}
+	return 0, errors.New("group bot count not configured")
+}
+
+func (f *fakeFeishuClient) ListAnnouncementBlocks(_ context.Context, chatID string) ([]feishu.AnnouncementBlock, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.announcementListCalls = append(f.announcementListCalls, chatID)
+	if f.announcementListErr != nil {
+		return nil, f.announcementListErr
+	}
+	out := make([]feishu.AnnouncementBlock, len(f.announcementBlocks))
+	copy(out, f.announcementBlocks)
+	return out, nil
+}
+
+func (f *fakeFeishuClient) CreateAnnouncementTextBlock(_ context.Context, chatID, parentBlockID, content, clientToken string) (feishu.AnnouncementBlock, error) {
+	return f.createAnnouncementTextBlock(chatID, parentBlockID, content, clientToken, nil)
+}
+
+func (f *fakeFeishuClient) CreateAnnouncementTextBlockAt(_ context.Context, chatID, parentBlockID, content, clientToken string, index int) (feishu.AnnouncementBlock, error) {
+	return f.createAnnouncementTextBlock(chatID, parentBlockID, content, clientToken, &index)
+}
+
+func (f *fakeFeishuClient) createAnnouncementTextBlock(chatID, parentBlockID, content, clientToken string, index *int) (feishu.AnnouncementBlock, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var indexCopy *int
+	if index != nil {
+		v := *index
+		indexCopy = &v
+	}
+	f.announcementCreateCalls = append(f.announcementCreateCalls, fakeAnnouncementCreateCall{chatID: chatID, parentBlockID: parentBlockID, content: content, clientToken: clientToken, index: indexCopy})
+	if f.announcementCreateErr != nil {
+		return feishu.AnnouncementBlock{}, f.announcementCreateErr
+	}
+	blockID := "announcement-block-created"
+	if len(f.announcementBlocks) > 0 {
+		blockID = blockID + "-next"
+	}
+	block := feishu.AnnouncementBlock{BlockID: blockID, Text: content}
+	if index == nil || *index >= len(f.announcementBlocks) {
+		f.announcementBlocks = append(f.announcementBlocks, block)
+	} else {
+		insertAt := *index
+		if insertAt < 0 {
+			insertAt = 0
+		}
+		f.announcementBlocks = append(f.announcementBlocks, feishu.AnnouncementBlock{})
+		copy(f.announcementBlocks[insertAt+1:], f.announcementBlocks[insertAt:])
+		f.announcementBlocks[insertAt] = block
+	}
+	return block, nil
+}
+
+func (f *fakeFeishuClient) UpdateAnnouncementTextBlock(_ context.Context, chatID, blockID, content, clientToken string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.announcementUpdateCalls = append(f.announcementUpdateCalls, struct{ chatID, blockID, content, clientToken string }{chatID: chatID, blockID: blockID, content: content, clientToken: clientToken})
+	if f.announcementUpdateErr != nil {
+		return f.announcementUpdateErr
+	}
+	for i := range f.announcementBlocks {
+		if f.announcementBlocks[i].BlockID == blockID {
+			f.announcementBlocks[i].Text = content
+			return nil
+		}
+	}
+	f.announcementBlocks = append(f.announcementBlocks, feishu.AnnouncementBlock{BlockID: blockID, Text: content})
+	return nil
+}
+
+func (f *fakeFeishuClient) BotOpenID() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return strings.TrimSpace(f.botOpenID)
+}
+
+func (f *fakeFeishuClient) BotName() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return strings.TrimSpace(f.botName)
+}
+
 func (f *fakeFeishuClient) replyCardsSnapshot() []map[string]any {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -700,6 +821,37 @@ func cardButtonLabelsByAction(card map[string]any) map[string]string {
 	return labels
 }
 
+func firstCardActionValueForTest(card map[string]any, actionName string) map[string]any {
+	for _, button := range cardButtonsForTest(card) {
+		value, _ := button["value"].(map[string]any)
+		if len(value) == 0 {
+			behaviors, _ := button["behaviors"].([]map[string]any)
+			if len(behaviors) > 0 {
+				value, _ = behaviors[0]["value"].(map[string]any)
+			}
+		}
+		if got, _ := value["action"].(string); got == actionName {
+			return value
+		}
+	}
+	return nil
+}
+
+func firstCardSelectActionValueForTest(card map[string]any, name string) map[string]any {
+	for _, selectStatic := range cardSelectStaticForTest(card) {
+		if got, _ := selectStatic["name"].(string); got != name {
+			continue
+		}
+		behaviors, _ := selectStatic["behaviors"].([]map[string]any)
+		if len(behaviors) == 0 {
+			return nil
+		}
+		value, _ := behaviors[0]["value"].(map[string]any)
+		return value
+	}
+	return nil
+}
+
 func cardSelectStaticForTest(card map[string]any) []map[string]any {
 	var selects []map[string]any
 	for _, elem := range cardElementsForTest(card) {
@@ -728,7 +880,7 @@ func newTestApp(t *testing.T) (*App, *fakeFeishuClient, *fakeCodexClient) {
 	if err != nil {
 		t.Fatalf("Open(store) error = %v", err)
 	}
-	ff := &fakeFeishuClient{}
+	ff := &fakeFeishuClient{botOpenID: "bot-open"}
 	fc := &fakeCodexClient{}
 	var asyncWG sync.WaitGroup
 	a := &App{
@@ -753,6 +905,7 @@ func newTestApp(t *testing.T) (*App, *fakeFeishuClient, *fakeCodexClient) {
 		},
 	}
 	replaceCodexClient(a, fc)
+	configureGroupPrimaryEvents(a)
 	t.Cleanup(asyncWG.Wait)
 	return a, ff, fc
 }
@@ -1048,18 +1201,18 @@ func TestAppMiscMessageHelpers(t *testing.T) {
 	}
 
 	sessionKey := makeSessionKey(a, &feishu.InboundMessage{ChatType: "group", ChatID: "chat", RootMessageID: "root", MessageID: "msg"})
-	if sessionKey != "feishu:group:chat:root:root" {
+	if sessionKey != "feishu:chat:chat" {
 		t.Fatalf("makeSessionKey(group) = %q", sessionKey)
 	}
 	sessionKey = makeSessionKey(a, &feishu.InboundMessage{ChatType: "p2p", ChatID: "chat", UserID: "user"})
-	if sessionKey != "feishu:p2p:chat:user" {
+	if sessionKey != "feishu:chat:chat" {
 		t.Fatalf("makeSessionKey(p2p) = %q", sessionKey)
 	}
 	a.frontendID = "frontend-a"
-	if got := makeSessionKey(a, &feishu.InboundMessage{ChatType: "group", ChatID: "chat", RootMessageID: "root", MessageID: "msg"}); got != "feishu:frontend:frontend-a:group:chat:root:root" {
+	if got := makeSessionKey(a, &feishu.InboundMessage{ChatType: "group", ChatID: "chat", RootMessageID: "root", MessageID: "msg"}); got != "feishu:frontend:frontend-a:chat:chat" {
 		t.Fatalf("makeSessionKey(frontend group) = %q", got)
 	}
-	if got := makeSessionKey(a, &feishu.InboundMessage{ChatType: "p2p", ChatID: "chat", UserID: "user"}); got != "feishu:frontend:frontend-a:p2p:chat:user" {
+	if got := makeSessionKey(a, &feishu.InboundMessage{ChatType: "p2p", ChatID: "chat", UserID: "user"}); got != "feishu:frontend:frontend-a:chat:chat" {
 		t.Fatalf("makeSessionKey(frontend p2p) = %q", got)
 	}
 }
@@ -1073,18 +1226,21 @@ func TestSendCommandMenuAndStartupReadyNotifications(t *testing.T) {
 		t.Fatalf("expected one reply card, got %d", len(ff.replyCards))
 	}
 
-	if err := a.store.UpsertSession(&state.Session{Key: "s1", ChatID: "chat-2"}); err != nil {
+	if err := a.store.UpsertSession(&state.Session{Key: "s1", ChatID: "chat-2", ChatType: "p2p"}); err != nil {
 		t.Fatalf("UpsertSession(s1) error = %v", err)
 	}
-	if err := a.store.UpsertSession(&state.Session{Key: "s2", ChatID: "chat-1"}); err != nil {
+	if err := a.store.UpsertSession(&state.Session{Key: "s2", ChatID: "chat-1", ChatType: "p2p"}); err != nil {
 		t.Fatalf("UpsertSession(s2) error = %v", err)
 	}
-	if err := a.store.UpsertSession(&state.Session{Key: "s3", ChatID: "chat-1"}); err != nil {
+	if err := a.store.UpsertSession(&state.Session{Key: "s3", ChatID: "chat-1", ChatType: "p2p"}); err != nil {
 		t.Fatalf("UpsertSession(s3) error = %v", err)
 	}
+	if err := a.store.UpsertSession(&state.Session{Key: "s4", ChatID: "chat-group", ChatType: "group"}); err != nil {
+		t.Fatalf("UpsertSession(s4) error = %v", err)
+	}
 	sendStartupReadyNotifications(a)
-	if len(ff.sentTexts) < 2 {
-		t.Fatalf("expected startup notifications to known chats, got %+v", ff.sentTexts)
+	if len(ff.sentTexts) != 2 {
+		t.Fatalf("expected startup notifications only to p2p chats, got %+v", ff.sentTexts)
 	}
 }
 
@@ -1596,7 +1752,7 @@ func TestActionWrappersAndDispatchFallbacks(t *testing.T) {
 		ChatID:    "chat-1",
 		MessageID: "msg-1",
 		ActionValue: map[string]any{
-			"session_key": "feishu:group:chat-1:root:root-1",
+			"session_key": "feishu:frontend:default:chat:chat-1",
 		},
 	}
 
@@ -1625,10 +1781,12 @@ func TestActionWrappersAndDispatchFallbacks(t *testing.T) {
 			return newThreadService(a).CompleteMenuThread(action, action.ActionValue["session_key"].(string))
 		},
 		"menu.download": func() (*callback.CardActionTriggerResponse, error) {
-			const downloadSessionKey = "feishu:group:chat-1:root:download-root"
+			const downloadSessionKey = "feishu:chat:chat-1"
 			if err := a.store.UpsertSession(&state.Session{
 				Key:         downloadSessionKey,
 				WorkspaceID: a.cfg.Workspaces[0].ID,
+				ChatID:      "chat-1",
+				ChatType:    "group",
 			}); err != nil {
 				t.Fatalf("UpsertSession(download) error = %v", err)
 			}
@@ -1640,10 +1798,13 @@ func TestActionWrappersAndDispatchFallbacks(t *testing.T) {
 			}, downloadSessionKey)
 		},
 		"menu.fork": func() (*callback.CardActionTriggerResponse, error) {
-			const forkSessionKey = "feishu:group:chat-1:root:fork-root"
+			const forkSessionKey = "feishu:chat:chat-1"
 			if err := a.store.UpsertSession(&state.Session{
 				Key:                     forkSessionKey,
 				WorkspaceID:             a.cfg.Workspaces[0].ID,
+				ChatID:                  "chat-1",
+				ChatType:                "group",
+				RootMessageID:           "fork-root",
 				ActiveThreadID:          "thread-1",
 				ActiveThreadWorkspaceID: a.cfg.Workspaces[0].ID,
 			}); err != nil {
@@ -1655,10 +1816,13 @@ func TestActionWrappersAndDispatchFallbacks(t *testing.T) {
 			}}, forkSessionKey)
 		},
 		"menu.compact": func() (*callback.CardActionTriggerResponse, error) {
-			const compactSessionKey = "feishu:group:chat-1:root:compact-root"
+			const compactSessionKey = "feishu:chat:chat-1"
 			if err := a.store.UpsertSession(&state.Session{
 				Key:                     compactSessionKey,
 				WorkspaceID:             a.cfg.Workspaces[0].ID,
+				ChatID:                  "chat-1",
+				ChatType:                "group",
+				RootMessageID:           "compact-root",
 				ActiveThreadID:          "thread-1",
 				ActiveThreadWorkspaceID: a.cfg.Workspaces[0].ID,
 			}); err != nil {
@@ -1714,6 +1878,9 @@ func TestActionWrappersAndDispatchFallbacks(t *testing.T) {
 		"workspace.clone": func() (*callback.CardActionTriggerResponse, error) {
 			return newWorkspaceService(a).completeWorkspaceClone(action, action.ActionValue["session_key"].(string))
 		},
+		"workspace.worktree": func() (*callback.CardActionTriggerResponse, error) {
+			return newWorkspaceManagementServiceInner(a).CompleteWorkspaceWorktree(action, action.ActionValue["session_key"].(string))
+		},
 		"workspace.sandbox.menu": func() (*callback.CardActionTriggerResponse, error) {
 			return newWorkspaceService(a).completeWorkspaceSandboxMenu(action, action.ActionValue["session_key"].(string))
 		},
@@ -1745,7 +1912,7 @@ func TestActionWrappersAndDispatchFallbacks(t *testing.T) {
 			t.Fatalf("%s toast type = %q, want %s", name, resp.Toast.Type, wantToastType)
 		}
 		switch name {
-		case "menu.root", "menu.tools", "menu.thread", "menu.download", "menu.fork", "menu.compact", "menu.group.model", "menu.group.system", "menu.quiet", "menu.fast", "menu.model", "menu.status", "menu.debug", "menu.debug.logs", "menu.help", "menu.skills", "menu.workspace", "workspace.new", "workspace.clone", "workspace.delete.menu", "workspace.sandbox.menu", "workspace.policy.menu":
+		case "menu.root", "menu.tools", "menu.thread", "menu.download", "menu.fork", "menu.compact", "menu.group.model", "menu.group.system", "menu.quiet", "menu.fast", "menu.model", "menu.status", "menu.debug", "menu.debug.logs", "menu.help", "menu.skills", "menu.workspace", "workspace.new", "workspace.clone", "workspace.worktree", "workspace.delete.menu", "workspace.sandbox.menu", "workspace.policy.menu":
 			if resp.Card == nil {
 				t.Fatalf("%s should update current card", name)
 			}
@@ -1773,7 +1940,7 @@ func TestProcessMessageBlockedWhileBackendSwitching(t *testing.T) {
 func TestWorkspaceMenuCardsIncludeBackNavigation(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.cfg.Workspaces = append(a.cfg.Workspaces, config.Workspace{ID: "alt", Name: "Alt", Cwd: t.TempDir(), ApprovalPolicy: "never", SandboxMode: "read-only"})
-	sessionKey := "feishu:p2p:chat:user"
+	sessionKey := "feishu:chat:chat"
 	if err := a.store.UpsertSession(&state.Session{Key: sessionKey, WorkspaceID: "alt"}); err != nil {
 		t.Fatalf("UpsertSession() error = %v", err)
 	}
@@ -1842,7 +2009,7 @@ func TestWorkspaceDeleteMenuUsesSelectStatic(t *testing.T) {
 		{ID: "default", Name: "Default", Cwd: currentDir, ApprovalPolicy: "on-request", SandboxMode: "workspace-write"},
 		{ID: "drop", Name: "Drop", Cwd: dropDir, ApprovalPolicy: "on-request", SandboxMode: "workspace-write"},
 	}
-	sessionKey := "feishu:p2p:chat:user"
+	sessionKey := "feishu:chat:chat"
 	if err := a.store.UpsertSession(&state.Session{Key: sessionKey, WorkspaceID: "default"}); err != nil {
 		t.Fatalf("UpsertSession() error = %v", err)
 	}
@@ -1873,7 +2040,7 @@ func TestWorkspaceDeleteMenuUsesSelectStatic(t *testing.T) {
 
 func TestMenuCardsShowBreadcrumbsAndSubmenuIndicators(t *testing.T) {
 	a, _, _ := newTestApp(t)
-	sessionKey := "feishu:p2p:chat:user"
+	sessionKey := "feishu:chat:chat"
 
 	rootCard := renderCommandMenuCard(a, sessionKey)
 	if body := cardMarkdownContent(t, rootCard); !strings.Contains(body, "当前位置：主菜单") || strings.Contains(body, "当前模式: plan") {
@@ -1989,7 +2156,7 @@ func TestMenuCardsShowBreadcrumbsAndSubmenuIndicators(t *testing.T) {
 
 func TestPlanModePrefixesTitlesAndDropsBanner(t *testing.T) {
 	a, _, _ := newTestApp(t)
-	sessionKey := "feishu:p2p:chat:user"
+	sessionKey := "feishu:chat:chat"
 	if err := a.store.UpsertSession(&state.Session{
 		Key:                           sessionKey,
 		WorkspaceID:                   a.cfg.Workspaces[0].ID,
@@ -2027,7 +2194,7 @@ func TestClaudeMenuCardsHideUnsupportedLocalFeatures(t *testing.T) {
 	a.cfg.Feishu.Backend = backendClaude
 	a.codex = nil
 	a.claude = &fakeClaudeCore{}
-	sessionKey := "feishu:p2p:chat:user"
+	sessionKey := "feishu:chat:chat"
 
 	toolsCard := renderToolsMenuCard(a, sessionKey)
 	toolsLabels := cardButtonLabelsByAction(toolsCard)
@@ -2058,7 +2225,7 @@ func TestClaudeStaleReviewMenuActionPassthroughsAndFallsBackToToolsMenu(t *testi
 	a.codex = nil
 	claude := &fakeClaudeCore{}
 	a.claude = claude
-	sessionKey := "feishu:p2p:chat:user"
+	sessionKey := "feishu:chat:chat"
 
 	resp, err := newMenuActionService(a).completeMenuReview(&feishu.CardAction{
 		ActionValue: map[string]any{"session_key": sessionKey},
@@ -3096,10 +3263,10 @@ func TestTurnStartAndFinishFlowHelpers(t *testing.T) {
 		t.Fatalf("buildTurnSandboxPolicy(bad) = %+v, want nil", got)
 	}
 
-	if _, err := startSubmissionTurn(a, context.Background(), sessionKey, "thread-1", nil, a.cfg.Workspaces[0].Cwd, "on-request", "workspace-write", "", "", ""); err == nil {
+	if _, err := startSubmissionTurn(a, context.Background(), sessionKey, "thread-1", nil, a.cfg.Workspaces[0].Cwd, "on-request", "workspace-write", "", "", "", ""); err == nil {
 		t.Fatal("expected startSubmissionTurn(nil submission) to fail")
 	}
-	if _, err := startSubmissionTurn(a, context.Background(), sessionKey, "thread-1", &state.Submission{ID: "empty"}, a.cfg.Workspaces[0].Cwd, "on-request", "workspace-write", "", "", ""); err == nil {
+	if _, err := startSubmissionTurn(a, context.Background(), sessionKey, "thread-1", &state.Submission{ID: "empty"}, a.cfg.Workspaces[0].Cwd, "on-request", "workspace-write", "", "", "", ""); err == nil {
 		t.Fatal("expected startSubmissionTurn(empty input) to fail")
 	}
 
@@ -3153,7 +3320,7 @@ func TestStartSubmissionTurnIncludesFastServiceTier(t *testing.T) {
 		return nil
 	}
 	sub := &state.Submission{ID: "sub-1", InputText: "hello"}
-	if _, err := startSubmissionTurn(a, context.Background(), "sess-1", "thread-1", sub, a.cfg.Workspaces[0].Cwd, "on-request", "workspace-write", "fast", "", ""); err != nil {
+	if _, err := startSubmissionTurn(a, context.Background(), "sess-1", "thread-1", sub, a.cfg.Workspaces[0].Cwd, "on-request", "workspace-write", "fast", "", "", ""); err != nil {
 		t.Fatalf("startSubmissionTurn() error = %v", err)
 	}
 	if gotParams == nil {
@@ -3207,7 +3374,7 @@ func TestNotificationHelpers(t *testing.T) {
 
 func TestHandleFeishuMessageReplySteersToLinkedTurn(t *testing.T) {
 	a, _, fc := newTestApp(t)
-	targetSessionKey := "feishu:group:chat-1:root:root-msg"
+	targetSessionKey := "feishu:chat:chat-1"
 	if err := a.store.UpsertSession(&state.Session{
 		Key:            targetSessionKey,
 		WorkspaceID:    a.cfg.Workspaces[0].ID,
@@ -3265,7 +3432,7 @@ func TestHandleFeishuMessageReplySteersToLinkedTurn(t *testing.T) {
 
 func TestHandleFeishuMessageReplySteersWithStagedImages(t *testing.T) {
 	a, _, fc := newTestApp(t)
-	targetSessionKey := "feishu:group:chat-1:root:root-msg"
+	targetSessionKey := "feishu:chat:chat-1"
 	bucketSessionKey := newReplyContinuationService(a).pendingInputSessionKey(&feishu.InboundMessage{ChatID: "chat-1", ChatType: "group", UserID: "user-1"})
 	if err := a.store.UpsertSession(&state.Session{
 		Key:            targetSessionKey,
@@ -3340,7 +3507,7 @@ func TestHandleFeishuMessageReplySteersWithStagedImages(t *testing.T) {
 
 func TestHandleFeishuMessageReplySteerFallsBackToQueue(t *testing.T) {
 	a, _, fc := newTestApp(t)
-	targetSessionKey := "feishu:group:chat-1:root:root-msg"
+	targetSessionKey := "feishu:chat:chat-1"
 	if err := a.store.UpsertSession(&state.Session{
 		Key:            targetSessionKey,
 		WorkspaceID:    a.cfg.Workspaces[0].ID,
@@ -3396,9 +3563,22 @@ func TestHandleFeishuMessageReplySteerFallsBackToQueue(t *testing.T) {
 	}
 }
 
-func TestHandleFeishuMessageUsesSelectedWorkspaceForNewGroupRoots(t *testing.T) {
+func TestHandleFeishuMessageQueuesGroupSubmissionsOnBindingWorkspace(t *testing.T) {
 	a, _, fc := newTestApp(t)
 	a.cfg.Workspaces = append(a.cfg.Workspaces, config.Workspace{ID: "alt", Cwd: t.TempDir()})
+	if _, err := setGroupPrimary(a, "group", "chat-1", true); err != nil {
+		t.Fatalf("setGroupPrimary(chat-1) error = %v", err)
+	}
+	if err := a.State().SaveAgentBinding(&state.AgentBinding{
+		ID:          defaultBindingID(a.FrontendID(), "group", "chat-1"),
+		FrontendID:  a.FrontendID(),
+		ChatID:      "chat-1",
+		ChatType:    "group",
+		WorkspaceID: "default",
+		Status:      state.AgentBindingStatusActive.String(),
+	}); err != nil {
+		t.Fatalf("SaveAgentBinding(chat-1) error = %v", err)
+	}
 	rootASessionKey := makeSessionKey(a, &feishu.InboundMessage{
 		ChatID:        "chat-1",
 		ChatType:      "group",
@@ -3420,6 +3600,19 @@ func TestHandleFeishuMessageUsesSelectedWorkspaceForNewGroupRoots(t *testing.T) 
 		Status:                  state.SessionStatusTurnInProgress.String(),
 	}); err != nil {
 		t.Fatalf("UpsertSession(root-a) error = %v", err)
+	}
+	if _, err := a.store.CreateSubmission(&state.Submission{
+		ID:               "sub-a",
+		SessionKey:       rootASessionKey,
+		WorkspaceID:      a.cfg.Workspaces[0].ID,
+		ThreadID:         "thread-a",
+		TurnID:           "turn-a",
+		UserID:           "user-1",
+		ChatID:           "chat-1",
+		TriggerMessageID: "root-a",
+		Status:           state.SubmissionStatusRunning.String(),
+	}); err != nil {
+		t.Fatalf("CreateSubmission(root-a) error = %v", err)
 	}
 
 	threadStartCwds := []string{}
@@ -3445,8 +3638,8 @@ func TestHandleFeishuMessageUsesSelectedWorkspaceForNewGroupRoots(t *testing.T) 
 		}
 	}
 
-	if err := setWorkspaceSelectionForMessage(a, &feishu.InboundMessage{ChatID: "chat-1", ChatType: "group", UserID: "user-1"}, "alt"); err != nil {
-		t.Fatalf("setWorkspaceSelectionForMessage(group -> alt) error = %v", err)
+	if _, err := newBindingService(a).activateBindingWorkspace(agentBindingForChat(a, "group", "chat-1"), "alt"); err != nil {
+		t.Fatalf("activateBindingWorkspace(group -> alt) error = %v", err)
 	}
 
 	a.HandleFeishuMessage(&feishu.InboundMessage{
@@ -3465,8 +3658,11 @@ func TestHandleFeishuMessageUsesSelectedWorkspaceForNewGroupRoots(t *testing.T) 
 		MessageID:     "root-b",
 		RootMessageID: "root-b",
 	})
-	if err := setWorkspaceSelectionForMessage(a, &feishu.InboundMessage{ChatID: "chat-1", ChatType: "group", UserID: "user-1"}, "default"); err != nil {
-		t.Fatalf("setWorkspaceSelectionForMessage(group -> default) error = %v", err)
+	if rootBSessionKey != rootASessionKey {
+		t.Fatalf("root-b session key = %q, want shared group session %q", rootBSessionKey, rootASessionKey)
+	}
+	if _, err := newBindingService(a).activateBindingWorkspace(agentBindingForChat(a, "group", "chat-1"), "default"); err != nil {
+		t.Fatalf("activateBindingWorkspace(group -> default) error = %v", err)
 	}
 
 	a.HandleFeishuMessage(&feishu.InboundMessage{
@@ -3478,20 +3674,8 @@ func TestHandleFeishuMessageUsesSelectedWorkspaceForNewGroupRoots(t *testing.T) 
 		Text:          "run in A",
 	})
 
-	if len(threadStartCwds) != 2 {
-		t.Fatalf("thread/start cwds = %+v, want 2 calls", threadStartCwds)
-	}
-	if threadStartCwds[0] != a.cfg.Workspaces[1].Cwd {
-		t.Fatalf("first thread/start cwd = %q, want alt cwd %q", threadStartCwds[0], a.cfg.Workspaces[1].Cwd)
-	}
-	if threadStartCwds[1] != a.cfg.Workspaces[0].Cwd {
-		t.Fatalf("second thread/start cwd = %q, want default cwd %q", threadStartCwds[1], a.cfg.Workspaces[0].Cwd)
-	}
-	if sess := a.store.GetSession(rootASessionKey); sess == nil || sess.WorkspaceID != a.cfg.Workspaces[0].ID || sess.ActiveThreadWorkspaceID != a.cfg.Workspaces[0].ID {
-		t.Fatalf("root-a session should keep workspace A lineage: %+v", sess)
-	}
-	if sess := a.store.GetSession(rootBSessionKey); sess == nil || sess.WorkspaceID != "alt" || sess.ActiveThreadWorkspaceID != "alt" {
-		t.Fatalf("root-b session should run in workspace B: %+v", sess)
+	if len(threadStartCwds) != 0 {
+		t.Fatalf("thread/start cwds before root-a completes = %+v, want no calls", threadStartCwds)
 	}
 	rootCSessionKey := makeSessionKey(a, &feishu.InboundMessage{
 		ChatID:        "chat-1",
@@ -3500,8 +3684,47 @@ func TestHandleFeishuMessageUsesSelectedWorkspaceForNewGroupRoots(t *testing.T) 
 		MessageID:     "root-c",
 		RootMessageID: "root-c",
 	})
-	if sess := a.store.GetSession(rootCSessionKey); sess == nil || sess.WorkspaceID != a.cfg.Workspaces[0].ID || sess.ActiveThreadWorkspaceID != a.cfg.Workspaces[0].ID {
-		t.Fatalf("root-c session should run in workspace A: %+v", sess)
+	if rootCSessionKey != rootASessionKey {
+		t.Fatalf("root-c session key = %q, want shared group session %q", rootCSessionKey, rootASessionKey)
+	}
+	sess := a.store.GetSession(rootASessionKey)
+	if sess == nil || sess.WorkspaceID != a.cfg.Workspaces[0].ID || sess.ActiveThreadWorkspaceID != a.cfg.Workspaces[0].ID || len(sess.Queue) != 2 {
+		t.Fatalf("group session should keep active workspace A and queue two submissions: %+v", sess)
+	}
+	rootBSub := a.store.GetSubmission(sess.Queue[0])
+	if rootBSub == nil || rootBSub.WorkspaceID != "alt" || rootBSub.TriggerMessageID != "root-b" {
+		t.Fatalf("root-b submission should be queued on workspace B: %+v", rootBSub)
+	}
+	rootCSub := a.store.GetSubmission(sess.Queue[1])
+	if rootCSub == nil || rootCSub.WorkspaceID != a.cfg.Workspaces[0].ID || rootCSub.TriggerMessageID != "root-c" {
+		t.Fatalf("root-c submission should be queued on workspace A: %+v", rootCSub)
+	}
+
+	handleNotification(a, "turn/completed", json.RawMessage(`{"threadId":"thread-a","turn":{"id":"turn-a","status":"completed"}}`))
+	a.waitAsync()
+
+	if len(threadStartCwds) != 1 {
+		t.Fatalf("thread/start cwds after root-a completes = %+v, want root-b call", threadStartCwds)
+	}
+	if threadStartCwds[0] != a.cfg.Workspaces[1].Cwd {
+		t.Fatalf("root-b thread/start cwd = %q, want alt cwd %q", threadStartCwds[0], a.cfg.Workspaces[1].Cwd)
+	}
+	sess = a.store.GetSession(rootASessionKey)
+	if sess == nil || sess.ActiveThreadWorkspaceID != "alt" || sess.ActiveTurnID != "turn-b" || len(sess.Queue) != 1 || sess.Queue[0] != rootCSub.ID {
+		t.Fatalf("group session should run root-b and keep root-c queued: %+v", sess)
+	}
+
+	handleNotification(a, "turn/completed", json.RawMessage(`{"threadId":"thread-b","turn":{"id":"turn-b","status":"completed"}}`))
+	a.waitAsync()
+
+	if len(threadStartCwds) != 2 {
+		t.Fatalf("thread/start cwds after root-b completes = %+v, want root-c call", threadStartCwds)
+	}
+	if threadStartCwds[1] != a.cfg.Workspaces[0].Cwd {
+		t.Fatalf("root-c thread/start cwd = %q, want default cwd %q", threadStartCwds[1], a.cfg.Workspaces[0].Cwd)
+	}
+	if sess := a.store.GetSession(rootASessionKey); sess == nil || sess.WorkspaceID != a.cfg.Workspaces[0].ID || sess.ActiveThreadWorkspaceID != a.cfg.Workspaces[0].ID || sess.ActiveTurnID != "turn-c" || len(sess.Queue) != 0 {
+		t.Fatalf("group session should run root-c in workspace A after root-b completes: %+v", sess)
 	}
 }
 
@@ -3647,7 +3870,7 @@ func TestTopLevelStagedImagesBindRootsToNextTurn(t *testing.T) {
 
 func TestReplyFallbackTurnBindsOnlyReplyRoot(t *testing.T) {
 	a, _, fc := newTestApp(t)
-	replySessionKey := "feishu:group:chat-1:root:reply-root"
+	replySessionKey := "feishu:chat:chat-1"
 	bucketSessionKey := newReplyContinuationService(a).pendingInputSessionKey(&feishu.InboundMessage{ChatID: "chat-1", ChatType: "group", UserID: "user-1"})
 	if err := a.store.UpsertSession(&state.Session{
 		Key:         replySessionKey,
@@ -3938,8 +4161,20 @@ func TestHandleCommandAndInboundDiscardHelpers(t *testing.T) {
 	a, ff, fc := newTestApp(t)
 	msg := &feishu.InboundMessage{MessageID: "m-1", ChatID: "chat-1", ChatType: "group", RootMessageID: "root-1", UserID: "user-1"}
 	sessionKey := makeSessionKey(a, msg)
+	bindingID := defaultBindingID(a.FrontendID(), "group", "chat-1")
+	if err := a.State().SaveAgentBinding(&state.AgentBinding{
+		ID:          bindingID,
+		FrontendID:  a.FrontendID(),
+		ChatID:      "chat-1",
+		ChatType:    "group",
+		WorkspaceID: a.cfg.Workspaces[0].ID,
+		Status:      state.AgentBindingStatusActive.String(),
+	}); err != nil {
+		t.Fatalf("SaveAgentBinding() error = %v", err)
+	}
 	if err := a.store.UpsertSession(&state.Session{
 		Key:                        sessionKey,
+		BindingID:                  bindingID,
 		WorkspaceID:                a.cfg.Workspaces[0].ID,
 		ActiveThreadID:             "thread-1",
 		ActiveThreadWorkspaceID:    a.cfg.Workspaces[0].ID,
@@ -4006,7 +4241,6 @@ func TestHandleCommandAndInboundDiscardHelpers(t *testing.T) {
 		"/workspace list",
 		"/workspace sandbox",
 		"/workspace policy",
-		"/workspace new",
 	} {
 		if err := handleCommand(a, msg, raw); err != nil && raw != "/threads" {
 			t.Fatalf("handleCommand(%q) error = %v", raw, err)
@@ -4250,7 +4484,7 @@ func TestCommandThreadsDisplaysThreadList(t *testing.T) {
 
 func TestRenderThreadsCardShowsThreadActionsAndShortIDsForActiveCodexThread(t *testing.T) {
 	a, _, fc := newTestApp(t)
-	sessionKey := "feishu:p2p:chat:user"
+	sessionKey := "feishu:chat:chat"
 	if err := a.store.UpsertSession(&state.Session{
 		Key:                        sessionKey,
 		WorkspaceID:                a.cfg.Workspaces[0].ID,
@@ -4303,7 +4537,7 @@ func TestRenderThreadsCardShowsThreadActionsAndShortIDsForActiveCodexThread(t *t
 
 func TestRenderThreadsCardExplainsMissingThreadActionsWithoutActiveCodexThread(t *testing.T) {
 	a, _, fc := newTestApp(t)
-	sessionKey := "feishu:p2p:chat:user"
+	sessionKey := "feishu:chat:chat"
 	if err := a.store.UpsertSession(&state.Session{
 		Key:         sessionKey,
 		WorkspaceID: a.cfg.Workspaces[0].ID,
@@ -4333,7 +4567,7 @@ func TestRenderThreadsCardExplainsMissingThreadActionsWithoutActiveCodexThread(t
 		}
 	}
 	body := cardMarkdownContent(t, card)
-	if !strings.Contains(body, "no active thread, so /thread fork, /thread sandbox, /thread policy are not shown.") {
+	if !strings.Contains(body, "no active thread, so /thread fork, /thread sandbox, /thread policy, /thread multiagent are not shown.") {
 		t.Fatalf("thread card body = %q, want missing-active-thread hint", body)
 	}
 }

@@ -92,8 +92,11 @@ func TestStandaloneCompactionLifecycle(t *testing.T) {
 	if updated := a.store.GetSession(sessionKey); updated == nil || updated.ActiveTurnID != "" || updated.Status != "idle" {
 		t.Fatalf("session after finish = %+v", updated)
 	}
-	if len(ff.replyTexts) != 1 || ff.replyTexts[0] != "当前线程上下文已压缩完成。" {
-		t.Fatalf("completeStandaloneCompactItem() notices = %#v", ff.replyTexts)
+	if len(ff.sentTexts) != 1 || ff.sentTexts[0] != "当前线程上下文已压缩完成。" {
+		t.Fatalf("completeStandaloneCompactItem() notices = %#v", ff.sentTexts)
+	}
+	if len(ff.replyTexts) != 0 {
+		t.Fatalf("completeStandaloneCompactItem() reply notices = %#v, want none", ff.replyTexts)
 	}
 }
 
@@ -167,8 +170,11 @@ func TestStandaloneCompactionFailureBranches(t *testing.T) {
 	if updated := a.store.GetSession("sess-fail"); updated == nil || updated.ActiveTurnID != "" || updated.Status != "idle" {
 		t.Fatalf("session after fail = %+v", updated)
 	}
-	if len(ff.replyTexts) == 0 || !strings.Contains(ff.replyTexts[len(ff.replyTexts)-1], "boom") {
-		t.Fatalf("failStandaloneCompactTurn() notices = %#v", ff.replyTexts)
+	if len(ff.sentTexts) == 0 || !strings.Contains(ff.sentTexts[len(ff.sentTexts)-1], "boom") {
+		t.Fatalf("failStandaloneCompactTurn() notices = %#v", ff.sentTexts)
+	}
+	if len(ff.replyTexts) != 0 {
+		t.Fatalf("failStandaloneCompactTurn() reply notices = %#v, want none", ff.replyTexts)
 	}
 
 	if err := a.store.UpsertSession(&state.Session{
@@ -207,7 +213,7 @@ func TestStandaloneCompactionFailureBranches(t *testing.T) {
 
 func TestCompleteMenuCompactCodexAcksImmediatelyAndPatchesAcceptedCard(t *testing.T) {
 	a, ff, fc := newTestApp(t)
-	sessionKey := "feishu:p2p:chat:user"
+	sessionKey := "feishu:chat:chat"
 	if err := a.store.UpsertSession(&state.Session{
 		Key:            sessionKey,
 		WorkspaceID:    a.cfg.Workspaces[0].ID,
@@ -313,7 +319,7 @@ func TestCompleteMenuCompactClaudeAcksImmediatelyAndPatchesAcceptedCard(t *testi
 	}()
 	a.claude = claude
 
-	sessionKey := "feishu:p2p:chat:user"
+	sessionKey := "feishu:chat:chat"
 	if err := a.store.UpsertSession(&state.Session{
 		Key:         sessionKey,
 		WorkspaceID: a.cfg.Workspaces[0].ID,
@@ -377,7 +383,7 @@ func TestCompleteMenuCompactPatchesFailureCardOnError(t *testing.T) {
 	a, ff, _ := newTestApp(t)
 	a.backend = backendCodex
 	a.cfg.Feishu.Backend = backendCodex
-	sessionKey := "feishu:p2p:chat:user"
+	sessionKey := "feishu:chat:chat"
 	if err := a.store.UpsertSession(&state.Session{
 		Key:         sessionKey,
 		WorkspaceID: a.cfg.Workspaces[0].ID,

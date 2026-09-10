@@ -64,12 +64,32 @@ type App interface {
 
 	// Backend-specific start hooks.
 	SubmissionQueueIsReviewSubmission(sub *state.Submission) bool
-	SubmissionQueueStartSubmissionTurn(ctx context.Context, sessionKey, threadID string, sub *state.Submission, cwd, approvalPolicy, sandboxMode, serviceTier, model, reasoningEffort string) (string, error)
+	SubmissionQueueStartSubmissionTurn(ctx context.Context, sessionKey, threadID string, sub *state.Submission, cwd, approvalPolicy, sandboxMode, serviceTier, model, reasoningEffort, multiAgentMode string) (string, error)
 	SubmissionQueueStartSubmissionReview(ctx context.Context, threadID string, sub *state.Submission) (string, error)
 	SubmissionQueueBuildThreadStartParams(ws *config.Workspace, sess *state.Session, model string) codexrpc.ThreadStartParams
 	SubmissionQueueRequireCodexClient() (appcore.CodexClient, error)
 	SubmissionQueueClaudeClient() QueueClaudeClient
 	SubmissionQueueConfiguredClaudeModel() string
+}
+
+// agentBindingResolver is optional so narrow queue test hosts and non-Feishu
+// callers do not need to provide binding state. The production adapter uses
+// the current frontend's local binding for the inbound chat.
+type agentBindingResolver interface {
+	SubmissionQueueAgentBinding(chatType, chatID string) *state.AgentBinding
+}
+
+type agentBindingByIDResolver interface {
+	SubmissionQueueAgentBindingByID(id string) *state.AgentBinding
+}
+
+type codexConfigResolver interface {
+	SubmissionQueueConfiguredCodexModel() string
+	SubmissionQueueConfiguredCodexReasoningEffort() string
+}
+
+type botProfileResolver interface {
+	SubmissionQueueBotProfile() *state.BotProfile
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +179,7 @@ type QueueTurnStreamProvider interface {
 // QueueAutoRetryProvider narrows auto retry.
 type QueueAutoRetryProvider interface {
 	ObserveAutoRetryTerminal(sessionKey, threadID, status string, sess *state.Session, sub *state.Submission, reuseMessageID string) bool
+	HasBlockingAutoRetry(sessionKey string) bool
 }
 
 // QueueConversationBackendProvider narrows conversation backend.
@@ -208,17 +229,34 @@ func NewSubmissionQueueService(app App) SubmissionQueueService {
 func (s SubmissionQueueService) EnqueueSubmission(msg *feishu.InboundMessage, sessionKey string, bindOnlyCurrentRoot bool) error {
 	a := s.App
 	appState := a.SubmissionQueueAppState()
-	sess := appState.Session(sessionKey)
-	if sess == nil {
-		sess = &state.Session{
+	chatBinding := resolveAgentBinding(a, msg)
+	newSession := func() *state.Session {
+		bindingID := ""
+		workspaceID := a.SubmissionQueueDefaultWorkspaceID()
+		if chatBinding != nil {
+			bindingID = strings.TrimSpace(chatBinding.ID)
+			workspaceID = ""
+		}
+		return &state.Session{
 			Key:           sessionKey,
-			WorkspaceID:   a.SubmissionQueueDefaultWorkspaceID(),
-			OwnerUserID:   msg.UserID,
+			BindingID:     bindingID,
+			WorkspaceID:   workspaceID,
+			OwnerUserID:   conversationOwnerUserID(msg),
 			ChatID:        msg.ChatID,
 			ChatType:      msg.ChatType,
-			RootMessageID: msg.RootMessageID,
+			RootMessageID: firstNonEmpty(strings.TrimSpace(msg.RootMessageID), strings.TrimSpace(msg.MessageID)),
 			Status:        state.SessionStatusIdle.String(),
 		}
+	}
+	sess := appState.Session(sessionKey)
+	if sess == nil {
+		sess = newSession()
+	}
+	if strings.EqualFold(strings.TrimSpace(sess.ChatType), "group") || (msg != nil && strings.EqualFold(strings.TrimSpace(msg.ChatType), "group")) {
+		sess.OwnerUserID = ""
+	}
+	if strings.TrimSpace(sess.BindingID) == "" && chatBinding != nil {
+		sess.BindingID = strings.TrimSpace(chatBinding.ID)
 	}
 	workspaceID := strings.TrimSpace(a.SubmissionQueueResolveWorkspaceID(msg, sess, bindOnlyCurrentRoot))
 	if strings.TrimSpace(sess.WorkspaceID) == "" {
@@ -231,18 +269,19 @@ func (s SubmissionQueueService) EnqueueSubmission(msg *feishu.InboundMessage, se
 		sess = appState.Session(sessionKey)
 	}
 	if sess == nil {
-		sess = &state.Session{
-			Key:           sessionKey,
-			WorkspaceID:   a.SubmissionQueueDefaultWorkspaceID(),
-			OwnerUserID:   msg.UserID,
-			ChatID:        msg.ChatID,
-			ChatType:      msg.ChatType,
-			RootMessageID: msg.RootMessageID,
-			Status:        state.SessionStatusIdle.String(),
+		sess = newSession()
+		if strings.TrimSpace(sess.BindingID) == "" && chatBinding != nil {
+			sess.BindingID = strings.TrimSpace(chatBinding.ID)
 		}
 	}
 	if workspaceID == "" {
-		workspaceID = firstNonEmpty(strings.TrimSpace(a.SubmissionQueueResolveWorkspaceID(msg, sess, bindOnlyCurrentRoot)), strings.TrimSpace(sess.WorkspaceID), a.SubmissionQueueDefaultWorkspaceID())
+		workspaceID = firstNonEmpty(strings.TrimSpace(a.SubmissionQueueResolveWorkspaceID(msg, sess, bindOnlyCurrentRoot)), strings.TrimSpace(sess.WorkspaceID))
+		if strings.TrimSpace(sess.BindingID) == "" {
+			workspaceID = firstNonEmpty(workspaceID, a.SubmissionQueueDefaultWorkspaceID())
+		}
+	}
+	if workspaceID == "" {
+		return fmt.Errorf("当前 Bot 在本群还没有配置工作区，请先使用 /workspace 选择、创建或 clone 工作区")
 	}
 	inboundAttachments, err := a.SubmissionQueueAttachmentResolver().ResolveInboundAttachments(msg, workspaceID, sessionKey)
 	if err != nil {
@@ -269,8 +308,11 @@ func (s SubmissionQueueService) EnqueueSubmission(msg *feishu.InboundMessage, se
 	mode := a.SubmissionQueueConfiguredInflightMode()
 	hasInFlight := sessionctx.HasInFlightSubmission(sess)
 	queueLenBefore := len(sess.Queue)
-	shouldAttemptStart := !hasInFlight || a.SubmissionQueueInflightAllowsAdditional(mode)
-	willWaitInQueue := queueLenBefore > 0 || (hasInFlight && !a.SubmissionQueueInflightAllowsAdditional(mode))
+	autoRetryBlocked := s.hasAutoRetryWorkAhead(appState, sess)
+	serialBindingBlocked := s.hasSerialBindingWorkAhead(appState, sess)
+	allowsAdditional := a.SubmissionQueueInflightAllowsAdditional(mode) && serialGroupExecutionKey(sess) == ""
+	shouldAttemptStart := !autoRetryBlocked && !serialBindingBlocked && (!hasInFlight || allowsAdditional)
+	willWaitInQueue := queueLenBefore > 0 || autoRetryBlocked || serialBindingBlocked || (hasInFlight && !allowsAdditional)
 	if willWaitInQueue {
 		sess.Status = state.SessionStatusQueued.String()
 	}
@@ -286,6 +328,8 @@ func (s SubmissionQueueService) EnqueueSubmission(msg *feishu.InboundMessage, se
 		"active_operations_count", len(sess.ActiveOperations),
 		"should_attempt_start", shouldAttemptStart,
 		"will_wait_in_queue", willWaitInQueue,
+		"auto_retry_blocked", autoRetryBlocked,
+		"serial_binding_blocked", serialBindingBlocked,
 	)
 	if err := appState.SaveSession(sess); err != nil {
 		return err
@@ -293,6 +337,7 @@ func (s SubmissionQueueService) EnqueueSubmission(msg *feishu.InboundMessage, se
 	a.SubmissionQueueLogSessionState("submission enqueue session persisted", sessionKey, appState.Session(sessionKey))
 	sub := &state.Submission{
 		SessionKey:           sessionKey,
+		BindingID:            strings.TrimSpace(sess.BindingID),
 		WorkspaceID:          workspaceID,
 		UserID:               msg.UserID,
 		ChatID:               msg.ChatID,
@@ -342,7 +387,214 @@ func (s SubmissionQueueService) EnqueueSubmission(msg *feishu.InboundMessage, se
 	}
 	a.SubmissionQueueMarkSubmissionQueuedReactions(sub)
 	a.SubmissionQueueSendQueuedNotice(context.Background(), sub)
+	if serialBindingBlocked && !autoRetryBlocked {
+		a.SubmissionQueueRunAsync(func() {
+			s.StartNextSubmissionAsync(sessionKey, "serialBindingQueued")
+		})
+	}
 	return nil
+}
+
+func resolveAgentBinding(a App, msg *feishu.InboundMessage) *state.AgentBinding {
+	if msg == nil {
+		return nil
+	}
+	resolver, ok := a.(agentBindingResolver)
+	if !ok || resolver == nil {
+		return nil
+	}
+	return resolver.SubmissionQueueAgentBinding(msg.ChatType, msg.ChatID)
+}
+
+func conversationOwnerUserID(msg *feishu.InboundMessage) string {
+	if msg == nil || strings.EqualFold(strings.TrimSpace(msg.ChatType), "group") {
+		return ""
+	}
+	return strings.TrimSpace(msg.UserID)
+}
+
+func resolveAgentBindingByID(a App, id string) *state.AgentBinding {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	resolver, ok := a.(agentBindingByIDResolver)
+	if !ok || resolver == nil {
+		return nil
+	}
+	return resolver.SubmissionQueueAgentBindingByID(id)
+}
+
+func submissionBinding(a App, sess *state.Session, sub *state.Submission) *state.AgentBinding {
+	if sub != nil {
+		if binding := resolveAgentBindingByID(a, sub.BindingID); binding != nil {
+			return binding
+		}
+	}
+	if sess != nil {
+		return resolveAgentBindingByID(a, sess.BindingID)
+	}
+	return nil
+}
+
+func effectiveCodexModel(a App, sess *state.Session, sub *state.Submission, ws *config.Workspace) string {
+	binding := submissionBinding(a, sess, sub)
+	return firstNonEmpty(
+		sessionModelOverride(sess),
+		bindingModelOverride(binding),
+		botProfileModel(a),
+		configuredCodexModel(a),
+	)
+}
+
+func effectiveCodexReasoningEffort(a App, sess *state.Session, sub *state.Submission) string {
+	binding := submissionBinding(a, sess, sub)
+	return firstNonEmpty(
+		bindingReasoningEffortOverride(binding),
+		botProfileReasoningEffort(a),
+		configuredCodexReasoningEffort(a),
+	)
+}
+
+func effectiveClaudeModel(a App, sess *state.Session, sub *state.Submission, ws *config.Workspace) string {
+	binding := submissionBinding(a, sess, sub)
+	return firstNonEmpty(
+		sessionModelOverride(sess),
+		bindingModelOverride(binding),
+		botProfileClaudeModel(a),
+		configuredClaudeModel(a),
+	)
+}
+
+func effectiveBindingApprovalPolicy(a App, sess *state.Session, sub *state.Submission, ws *config.Workspace) string {
+	if sess != nil && strings.TrimSpace(sess.ActiveThreadApprovalPolicy) != "" {
+		return strings.TrimSpace(sess.ActiveThreadApprovalPolicy)
+	}
+	if binding := submissionBinding(a, sess, sub); binding != nil && strings.TrimSpace(binding.ApprovalPolicyOverride) != "" {
+		return strings.TrimSpace(binding.ApprovalPolicyOverride)
+	}
+	if profile := submissionBotProfile(a); profile != nil && strings.TrimSpace(profile.ApprovalPolicy) != "" {
+		return strings.TrimSpace(profile.ApprovalPolicy)
+	}
+	return sessionctx.EffectiveApprovalPolicy(sess, ws)
+}
+
+func effectiveBindingSandboxMode(a App, sess *state.Session, sub *state.Submission, ws *config.Workspace) string {
+	if sess != nil && strings.TrimSpace(sess.ActiveThreadSandboxMode) != "" {
+		return strings.TrimSpace(sess.ActiveThreadSandboxMode)
+	}
+	if binding := submissionBinding(a, sess, sub); binding != nil && strings.TrimSpace(binding.SandboxModeOverride) != "" {
+		return strings.TrimSpace(binding.SandboxModeOverride)
+	}
+	if profile := submissionBotProfile(a); profile != nil && strings.TrimSpace(profile.SandboxMode) != "" {
+		return strings.TrimSpace(profile.SandboxMode)
+	}
+	return sessionctx.EffectiveSandboxMode(sess, ws)
+}
+
+func effectiveBindingServiceTier(a App, sess *state.Session, sub *state.Submission) string {
+	if value := sessionctx.EffectiveServiceTier(sess); strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value)
+	}
+	if binding := submissionBinding(a, sess, sub); binding != nil {
+		if value := strings.TrimSpace(binding.ServiceTierOverride); value != "" {
+			return value
+		}
+	}
+	return strings.TrimSpace(botProfileServiceTier(a))
+}
+
+func effectiveBindingMultiAgentMode(a App, sess *state.Session, sub *state.Submission, ws *config.Workspace) string {
+	if sess != nil && strings.TrimSpace(sess.ActiveThreadMultiAgentMode) != "" {
+		return strings.TrimSpace(sess.ActiveThreadMultiAgentMode)
+	}
+	if binding := submissionBinding(a, sess, sub); binding != nil && strings.TrimSpace(binding.MultiAgentModeOverride) != "" {
+		return strings.TrimSpace(binding.MultiAgentModeOverride)
+	}
+	if profile := submissionBotProfile(a); profile != nil && strings.TrimSpace(profile.MultiAgentMode) != "" {
+		return strings.TrimSpace(profile.MultiAgentMode)
+	}
+	return sessionctx.EffectiveMultiAgentMode(sess, ws)
+}
+
+func submissionBotProfile(a App) *state.BotProfile {
+	resolver, ok := a.(botProfileResolver)
+	if !ok || resolver == nil {
+		return nil
+	}
+	return resolver.SubmissionQueueBotProfile()
+}
+
+func botProfileModel(a App) string {
+	if profile := submissionBotProfile(a); profile != nil {
+		return strings.TrimSpace(profile.Model)
+	}
+	return ""
+}
+
+func botProfileClaudeModel(a App) string {
+	if profile := submissionBotProfile(a); profile != nil {
+		return strings.TrimSpace(profile.ClaudeModel)
+	}
+	return ""
+}
+
+func botProfileReasoningEffort(a App) string {
+	if profile := submissionBotProfile(a); profile != nil {
+		return strings.TrimSpace(profile.ReasoningEffort)
+	}
+	return ""
+}
+
+func botProfileServiceTier(a App) string {
+	if profile := submissionBotProfile(a); profile != nil {
+		return strings.TrimSpace(profile.ServiceTier)
+	}
+	return ""
+}
+
+func configuredCodexModel(a App) string {
+	resolver, ok := a.(codexConfigResolver)
+	if !ok || resolver == nil {
+		return ""
+	}
+	return strings.TrimSpace(resolver.SubmissionQueueConfiguredCodexModel())
+}
+
+func configuredCodexReasoningEffort(a App) string {
+	resolver, ok := a.(codexConfigResolver)
+	if !ok || resolver == nil {
+		return ""
+	}
+	return strings.TrimSpace(resolver.SubmissionQueueConfiguredCodexReasoningEffort())
+}
+
+func configuredClaudeModel(a App) string {
+	if a == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.SubmissionQueueConfiguredClaudeModel())
+}
+
+func sessionModelOverride(sess *state.Session) string {
+	if sess == nil {
+		return ""
+	}
+	return strings.TrimSpace(sess.ModelOverride)
+}
+
+func bindingModelOverride(binding *state.AgentBinding) string {
+	if binding == nil {
+		return ""
+	}
+	return strings.TrimSpace(binding.ModelOverride)
+}
+
+func bindingReasoningEffortOverride(binding *state.AgentBinding) string {
+	if binding == nil {
+		return ""
+	}
+	return strings.TrimSpace(binding.ReasoningEffortOverride)
 }
 
 // PendingConfirmationText returns the pending confirmation text for a skill.
@@ -385,6 +637,14 @@ func (s SubmissionQueueService) StartNextSubmissionWithFailureNotice(sessionKey 
 			slog.Debug("startNextSubmission skipped", "session_key", sessionKey, "has_session", false)
 			return nil
 		}
+		if s.hasAutoRetryWorkAhead(appState, sess) {
+			slog.Debug("startNextSubmission skipped",
+				"session_key", sessionKey,
+				"reason", "auto_retry_priority",
+				"group_execution_key", serialGroupExecutionKey(sess),
+			)
+			return nil
+		}
 		nextMode := a.SubmissionQueueConfiguredInflightMode()
 		if len(sess.Queue) > 0 {
 			if nextSub := appState.Submission(sess.Queue[0]); nextSub != nil {
@@ -396,6 +656,14 @@ func (s SubmissionQueueService) StartNextSubmissionWithFailureNotice(sessionKey 
 				"session_key", sessionKey,
 				"has_session", true,
 				"active_turn_id", sess.ActiveTurnID,
+			)
+			return nil
+		}
+		if s.hasSerialBindingWorkAhead(appState, sess) {
+			slog.Debug("startNextSubmission skipped",
+				"session_key", sessionKey,
+				"reason", "serial_binding_work_ahead",
+				"group_execution_key", serialGroupExecutionKey(sess),
 			)
 			return nil
 		}
@@ -557,8 +825,8 @@ func (s SubmissionQueueService) HandleSubmissionStartFailure(sessionKey, threadI
 			"error", saveErr,
 		)
 	} else if sess != nil {
-		shouldStartNext = sess != nil && !sessionctx.HasInFlightSubmission(sess) && len(sess.Queue) > 0
-		a.SubmissionQueueAutoRetry().ObserveAutoRetryTerminal(sessionKey, threadID, "failed", sess, sub, "")
+		retryPending := a.SubmissionQueueAutoRetry().ObserveAutoRetryTerminal(sessionKey, threadID, "failed", sess, sub, "")
+		shouldStartNext = !retryPending && s.NextQueuedSessionKey(sessionKey) != ""
 	}
 	if clearedThreadLineage {
 		a.SubmissionQueueLiveThread().ClearSessionLiveThread(sessionKey)
@@ -569,8 +837,9 @@ func (s SubmissionQueueService) HandleSubmissionStartFailure(sessionKey, threadI
 	}
 	a.SubmissionQueueRuntimeMaintenance().CleanupSubmissionRuntimeState(sub)
 	if shouldStartNext {
+		nextSessionKey := s.NextQueuedSessionKey(sessionKey)
 		a.SubmissionQueueRunAsync(func() {
-			s.StartNextSubmissionAsync(sessionKey, "turnStartFailed")
+			s.StartNextSubmissionAsync(firstNonEmpty(nextSessionKey, sessionKey), "turnStartFailed")
 		})
 	}
 }
@@ -602,22 +871,178 @@ func (s SubmissionQueueService) NotifySubmissionStartFailure(ctx context.Context
 // StartNextSubmissionAsync asynchronously starts the next submission if needed.
 func (s SubmissionQueueService) StartNextSubmissionAsync(sessionKey, source string) {
 	a := s.App
-	appState := a.SubmissionQueueAppState()
 	if strings.TrimSpace(sessionKey) == "" {
 		return
 	}
-	sess := appState.Session(sessionKey)
-	if sess == nil || sessionctx.HasInFlightSubmission(sess) || len(sess.Queue) == 0 {
+	nextSessionKey := s.NextQueuedSessionKey(sessionKey)
+	if nextSessionKey == "" {
 		return
 	}
-	if err := s.StartNextSubmissionWithFailureNotice(sessionKey, true); err != nil {
+	if err := s.StartNextSubmissionWithFailureNotice(nextSessionKey, true); err != nil {
 		slog.Error("async startNextSubmission failed",
-			"session_key", sessionKey,
+			"session_key", nextSessionKey,
+			"source_session_key", sessionKey,
 			"source", source,
 			"error", err,
 		)
-		a.SubmissionQueueLogSessionState("async startNextSubmission failed snapshot", sessionKey, appState.Session(sessionKey))
+		a.SubmissionQueueLogSessionState("async startNextSubmission failed snapshot", nextSessionKey, a.SubmissionQueueAppState().Session(nextSessionKey))
 	}
+}
+
+// NextQueuedSessionKey returns the next session that may start work for the
+// same local execution surface as sessionKey. Group bindings are serialized
+// across roots; p2p and unbound sessions keep the existing per-session queue.
+func (s SubmissionQueueService) NextQueuedSessionKey(sessionKey string) string {
+	appState := s.App.SubmissionQueueAppState()
+	sess := appState.Session(sessionKey)
+	if sess == nil {
+		return ""
+	}
+	if s.hasAutoRetryWorkAhead(appState, sess) {
+		return ""
+	}
+	if groupExecutionKey := serialGroupExecutionKey(sess); groupExecutionKey != "" {
+		return nextQueuedSerialSessionKey(appState, groupExecutionKey)
+	}
+	if ShouldStartNextSubmissionAsync(sess) {
+		return strings.TrimSpace(sess.Key)
+	}
+	return ""
+}
+
+func (s SubmissionQueueService) hasAutoRetryWorkAhead(appState QueueAppStateProvider, sess *state.Session) bool {
+	if sess == nil {
+		return false
+	}
+	autoRetry := s.App.SubmissionQueueAutoRetry()
+	if autoRetry == nil {
+		return false
+	}
+	groupExecutionKey := serialGroupExecutionKey(sess)
+	if groupExecutionKey == "" {
+		return autoRetry.HasBlockingAutoRetry(strings.TrimSpace(sess.Key))
+	}
+	for _, candidate := range appState.Sessions() {
+		if candidate == nil || serialGroupExecutionKey(candidate) != groupExecutionKey {
+			continue
+		}
+		if autoRetry.HasBlockingAutoRetry(strings.TrimSpace(candidate.Key)) {
+			return true
+		}
+	}
+	return autoRetry.HasBlockingAutoRetry(strings.TrimSpace(sess.Key))
+}
+
+func (s SubmissionQueueService) hasSerialBindingWorkAhead(appState QueueAppStateProvider, sess *state.Session) bool {
+	groupExecutionKey := serialGroupExecutionKey(sess)
+	if groupExecutionKey == "" {
+		return false
+	}
+	currentKey := strings.TrimSpace(sess.Key)
+	currentHead := queuedHeadSubmission(appState, sess)
+	for _, candidate := range appState.Sessions() {
+		if candidate == nil || strings.TrimSpace(candidate.Key) == currentKey || serialGroupExecutionKey(candidate) != groupExecutionKey {
+			continue
+		}
+		if sessionctx.HasInFlightSubmission(candidate) {
+			return true
+		}
+		candidateHead := queuedHeadSubmission(appState, candidate)
+		if candidateHead == nil {
+			continue
+		}
+		if currentHead == nil || submissionBefore(candidateHead, currentHead) {
+			return true
+		}
+	}
+	return false
+}
+
+func nextQueuedSerialSessionKey(appState QueueAppStateProvider, groupExecutionKey string) string {
+	groupExecutionKey = strings.TrimSpace(groupExecutionKey)
+	if groupExecutionKey == "" {
+		return ""
+	}
+	var bestSessionKey string
+	var bestSub *state.Submission
+	for _, sess := range appState.Sessions() {
+		if sess == nil || serialGroupExecutionKey(sess) != groupExecutionKey {
+			continue
+		}
+		if sessionctx.HasInFlightSubmission(sess) {
+			return ""
+		}
+		head := queuedHeadSubmission(appState, sess)
+		if head == nil {
+			continue
+		}
+		if bestSub == nil || submissionBefore(head, bestSub) {
+			bestSub = head
+			bestSessionKey = strings.TrimSpace(sess.Key)
+		}
+	}
+	return bestSessionKey
+}
+
+func serialGroupExecutionKey(sess *state.Session) string {
+	if sess == nil || !strings.EqualFold(strings.TrimSpace(sess.ChatType), "group") {
+		return ""
+	}
+	frontendID, keyChatID, ok := sessionGroupKeyParts(sess.Key)
+	if !ok && strings.TrimSpace(sess.BindingID) == "" {
+		return ""
+	}
+	chatID := firstNonEmpty(keyChatID, strings.TrimSpace(sess.ChatID))
+	if chatID == "" {
+		return ""
+	}
+	if ok && frontendID == "" {
+		return "group:" + chatID
+	}
+	if !ok {
+		return "binding:" + strings.TrimSpace(sess.BindingID)
+	}
+	return "frontend:" + frontendID + ":group:" + chatID
+}
+
+func sessionGroupKeyParts(sessionKey string) (frontendID, chatID string, ok bool) {
+	frontendID, chatType, chatID, _, _ := appcore.ParseSessionKey(sessionKey)
+	if strings.TrimSpace(chatID) == "" {
+		return "", "", false
+	}
+	if chatType != "" && chatType != "group" {
+		return "", "", false
+	}
+	return strings.TrimSpace(frontendID), strings.TrimSpace(chatID), true
+}
+
+func queuedHeadSubmission(appState QueueAppStateProvider, sess *state.Session) *state.Submission {
+	if sess == nil || len(sess.Queue) == 0 {
+		return nil
+	}
+	id := strings.TrimSpace(sess.Queue[0])
+	if id == "" {
+		return nil
+	}
+	if sub := appState.Submission(id); sub != nil {
+		return sub
+	}
+	return &state.Submission{ID: id, SessionKey: strings.TrimSpace(sess.Key)}
+}
+
+func submissionBefore(a, b *state.Submission) bool {
+	if b == nil {
+		return a != nil
+	}
+	if a == nil {
+		return false
+	}
+	if a.CreatedAt != 0 || b.CreatedAt != 0 {
+		if a.CreatedAt != b.CreatedAt {
+			return a.CreatedAt < b.CreatedAt
+		}
+	}
+	return strings.TrimSpace(a.ID) < strings.TrimSpace(b.ID)
 }
 
 // StartNextCodexSubmissionWithFailureNotice handles Codex-specific submission
@@ -640,11 +1065,12 @@ func (s SubmissionQueueService) StartNextCodexSubmissionWithFailureNotice(sessio
 		threadID = ""
 		sessionctx.ClearThreadContext(sess)
 	}
-	effectiveModel := ""
-	effectiveReasoningEffort := ""
-	effectiveApprovalPolicy := sessionctx.EffectiveApprovalPolicy(sess, ws)
-	effectiveSandboxMode := sessionctx.EffectiveSandboxMode(sess, ws)
-	effectiveServiceTier := sessionctx.EffectiveServiceTier(sess)
+	effectiveModel := effectiveCodexModel(a, sess, sub, ws)
+	effectiveReasoningEffort := effectiveCodexReasoningEffort(a, sess, sub)
+	effectiveApprovalPolicy := effectiveBindingApprovalPolicy(a, sess, sub, ws)
+	effectiveSandboxMode := effectiveBindingSandboxMode(a, sess, sub, ws)
+	effectiveServiceTier := effectiveBindingServiceTier(a, sess, sub)
+	effectiveMultiAgentMode := effectiveBindingMultiAgentMode(a, sess, sub, ws)
 	if threadID == "" {
 		client, err := a.SubmissionQueueRequireCodexClient()
 		if err != nil {
@@ -717,7 +1143,7 @@ func (s SubmissionQueueService) StartNextCodexSubmissionWithFailureNotice(sessio
 	if a.SubmissionQueueIsReviewSubmission(sub) {
 		turnID, turnErr = a.SubmissionQueueStartSubmissionReview(turnCtx, threadID, sub)
 	} else {
-		turnID, turnErr = a.SubmissionQueueStartSubmissionTurn(turnCtx, sessionKey, threadID, sub, ws.Cwd, effectiveApprovalPolicy, effectiveSandboxMode, effectiveServiceTier, effectiveModel, effectiveReasoningEffort)
+		turnID, turnErr = a.SubmissionQueueStartSubmissionTurn(turnCtx, sessionKey, threadID, sub, ws.Cwd, effectiveApprovalPolicy, effectiveSandboxMode, effectiveServiceTier, effectiveModel, effectiveReasoningEffort, effectiveMultiAgentMode)
 	}
 	turnCancel()
 	if turnErr != nil {
@@ -769,7 +1195,7 @@ func (s SubmissionQueueService) StartNextCodexSubmissionWithFailureNotice(sessio
 		return err
 	}
 	a.SubmissionQueueReplyContinuation().RecordSubmissionSourceLinks(sub)
-	a.SubmissionQueueReplyContinuation().RecordRootTurnBinding(sess.RootMessageID, sessionKey, threadID, turnID)
+	recordLegacySessionRootTurnBinding(a.SubmissionQueueReplyContinuation(), sess, sub, sessionKey, threadID, turnID)
 	a.SubmissionQueueTurnStream().NoteTurnStarted(sessionKey, sub)
 	slog.Debug("startNextSubmission completed",
 		"session_key", sessionKey,
@@ -788,4 +1214,11 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func recordLegacySessionRootTurnBinding(reply QueueReplyContinuationProvider, sess *state.Session, sub *state.Submission, sessionKey, threadID, turnID string) {
+	if reply == nil || sess == nil || appcore.SubmissionHasSourceRootMessages(sub) {
+		return
+	}
+	reply.RecordRootTurnBinding(sess.RootMessageID, sessionKey, threadID, turnID)
 }

@@ -53,7 +53,7 @@ type StreamState struct {
 // IsQuietBoundaryTurnItem returns true if the item type marks a quiet-card boundary.
 func IsQuietBoundaryTurnItem(itemType string) bool {
 	switch turnitem.NormalizeTurnItemType(itemType) {
-	case "agent_message", "plan", "exited_review_mode":
+	case "agent_message", "user_input", "plan", "exited_review_mode":
 		return true
 	default:
 		return false

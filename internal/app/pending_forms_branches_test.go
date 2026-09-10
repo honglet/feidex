@@ -14,7 +14,7 @@ func TestPendingFormCancelBranches(t *testing.T) {
 	a, ff, fc := newTestApp(t)
 	seedActiveSubmission(t, a, "sess-1", "thread-1", "turn-1")
 
-	formKinds := []string{"tool_request_user_input_form", "mcp_elicitation_form", "workspace_new", "workspace_clone"}
+	formKinds := []string{"tool_request_user_input_form", "mcp_elicitation_form", "workspace_new", "workspace_clone", "workspace_worktree"}
 	for _, kind := range formKinds {
 		if err := a.store.UpsertPending(&state.PendingRequest{
 			ID:           kind,
@@ -63,7 +63,7 @@ func TestPendingFormCancelPreservesToolUserInputBody(t *testing.T) {
 		t.Fatalf("UpsertPending() error = %v", err)
 	}
 
-	resp, err := a.ServerRequestService().CompletePendingFormCancel( &feishu.CardAction{UserID: "user-1", ActionValue: map[string]any{"request_id": "input-form-1"}})
+	resp, err := a.ServerRequestService().CompletePendingFormCancel(&feishu.CardAction{UserID: "user-1", ActionValue: map[string]any{"request_id": "input-form-1"}})
 	if err != nil || resp == nil || resp.Card == nil {
 		t.Fatalf("completePendingFormCancel() = %#v, %v", resp, err)
 	}

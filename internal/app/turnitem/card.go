@@ -1,17 +1,23 @@
 package turnitem
 
-import "strings"
+import (
+	"strings"
+
+	"feidex/internal/app/pendingforms"
+)
 
 type CardPayload struct {
-	ItemID           string `json:"item_id"`
-	ItemType         string `json:"item_type"`
-	ProtocolItemType string `json:"protocol_item_type"`
-	ToolName         string `json:"tool_name"`
-	Title            string `json:"title"`
-	Color            string `json:"color"`
-	SummaryText      string `json:"summary_text"`
-	DetailText       string `json:"detail_text"`
-	IsFinalAnswer    bool   `json:"is_final_answer"`
+	ItemID           string                             `json:"item_id"`
+	ItemType         string                             `json:"item_type"`
+	ProtocolItemType string                             `json:"protocol_item_type"`
+	ToolName         string                             `json:"tool_name"`
+	MessagePhase     string                             `json:"message_phase"`
+	Title            string                             `json:"title"`
+	Color            string                             `json:"color"`
+	SummaryText      string                             `json:"summary_text"`
+	DetailText       string                             `json:"detail_text"`
+	IsFinalAnswer    bool                               `json:"is_final_answer"`
+	UserInput        *pendingforms.ToolUserInputPayload `json:"user_input,omitempty"`
 }
 
 func IsReplyTurnItem(itemType string) bool {
@@ -132,6 +138,8 @@ func TurnItemCardMeta(itemType string, isFinalAnswer bool) (string, string) {
 		return "文件改动", "orange"
 	case "agent_message":
 		return "回复", "green"
+	case "user_input":
+		return "需要补充输入", "orange"
 	case "entered_review_mode":
 		return "进入 Review", "blue"
 	case "exited_review_mode":

@@ -29,6 +29,9 @@ func (a *App) ServerRequestService() *serverrequest.Service {
 		SetSubStatus:    func(id, status string) error { return a.State().SetSubmissionStatus(id, status) },
 		Submission:      func(id string) *state.Submission { return a.State().Submission(id) },
 		Session:         func(key string) *state.Session { return a.State().Session(key) },
+		SessionKeysEqual: func(left, right string) bool {
+			return sessionKeysEqual(a, left, right)
+		},
 
 		// Feishu
 		SimpleStatusCard: func(title, color, body string, buttons []feishu.Button) map[string]any {
@@ -124,7 +127,7 @@ func completePendingFormCancelDispatch(a *App, action *feishu.CardAction) (*call
 		return &callback.CardActionTriggerResponse{Toast: &callback.Toast{Type: "warning", Content: "你没有权限处理这个请求"}}, nil
 	}
 	switch pending.Kind {
-	case "workspace_new", "workspace_clone", "review_form", "claude_exit_plan_mode":
+	case "workspace_new", "workspace_clone", "workspace_worktree", "review_form", "claude_exit_plan_mode":
 		return completeRootPendingFormCancel(a, pending)
 	default:
 		return a.ServerRequestService().CompletePendingFormCancel(action)
@@ -145,7 +148,7 @@ func completeRootPendingFormCancel(a *App, pending *state.PendingRequest) (*call
 	}
 	newRuntimeStateService(a).finalizePendingReply(pending)
 	switch pending.Kind {
-	case "workspace_new", "workspace_clone":
+	case "workspace_new", "workspace_clone", "workspace_worktree":
 		return &callback.CardActionTriggerResponse{
 			Toast: &callback.Toast{Type: "success", Content: "已返回工作区"},
 			Card:  rawCard(newWorkspaceRenderServiceInner(a).RenderWorkspaceMenuCard(pending.SessionKey)),
@@ -182,7 +185,7 @@ func completeRootPendingFormCancel(a *App, pending *state.PendingRequest) (*call
 func rootPendingTextRequest(a *App, sessionKey, userID string) *state.PendingRequest {
 	var best *state.PendingRequest
 	for _, req := range a.State().PendingRequests() {
-		if req == nil || state.NormalizePendingRequestStatus(req.Status) != state.PendingRequestStatusPending || req.SessionKey != sessionKey {
+		if req == nil || state.NormalizePendingRequestStatus(req.Status) != state.PendingRequestStatusPending || !sessionKeysEqual(a, req.SessionKey, sessionKey) {
 			continue
 		}
 		if req.OwnerUserID != "" && req.OwnerUserID != userID {

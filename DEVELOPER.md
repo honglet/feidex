@@ -41,7 +41,7 @@ Treat `frontend` as the runtime isolation boundary.
 - Any frontend-scoped runtime config change that affects backend session startup or resume semantics, such as Claude model or effort changes, must follow the same idle-only rule. Reject the change while a turn is active or pending work/forms exist; do not stage deferred resets to apply it later.
 - Switching backend must preserve backend-scoped session lineage. If a user switches `codex -> claude -> codex`, the earlier Codex thread context for that frontend session should be restorable.
 - If two frontends both use Codex, each frontend still owns its own Codex runtime process; do not share a single Codex app-server across multiple Feishu frontends.
-- Workspace config is for repository path, sandbox, approval policy, model overrides, and similar worktree concerns. Backend selection must not be modeled as a workspace or thread switch.
+- Workspace config is for repository path, sandbox, approval policy, and similar worktree concerns. Model selection belongs to backend-global config or group-scoped bot bindings, not workspace config. Backend selection must not be modeled as a workspace or thread switch.
 - Shared persistent state must scope frontend-sensitive runtime keys, such as session keys, pending server requests, and message-link caches, so different frontends do not collide.
 
 ## Repository Layout
@@ -116,10 +116,10 @@ approval and unattended MDM/PPPC options.
 
 ## Go Cache Convention
 
-Use the system default Go cache when it is writable. If the environment is sandboxed or the default cache is read-only, use the Feidex-standard tmp locations instead of ad hoc names:
+Use the system default Go cache when it is writable. If a command needs an isolated Feidex cache, use the Feidex-standard user cache locations instead of `/tmp`; `/tmp` may be backed by tmpfs and can exhaust memory on large Go builds.
 
-- `GOCACHE=/tmp/feidex-gocache`
-- `GOMODCACHE=/tmp/feidex-gomodcache`
+- `GOCACHE=${XDG_CACHE_HOME:-$HOME/.cache}/feidex/go-build`
+- `GOMODCACHE=${XDG_CACHE_HOME:-$HOME/.cache}/feidex/gomodcache`
 
 Do not invent task-specific cache directories such as random `go-build-*` or `probe-*` paths under `/tmp`.
 
@@ -138,6 +138,9 @@ Cleanup:
 Notes:
 
 - The cleanup script restores owner write permission before deletion because Go module cache directories are commonly extracted as read-only.
+- The cleanup script also removes the historical `/tmp/feidex-gocache` and `/tmp/feidex-gomodcache` directories if they exist.
+- The script name is historical; `with_tmp_go_cache.sh` no longer uses `/tmp` by default.
+- Use `FEIDEX_CACHE_HOME` when you intentionally need to move both Feidex cache directories together.
 - Use `FEIDEX_GOCACHE` and `FEIDEX_GOMODCACHE` only when you intentionally need non-standard locations.
 
 ### Local Integration Tests
@@ -299,6 +302,7 @@ Guidance:
 - When introducing a new item type, update normalization, rendering, quiet-mode handling, and tests together.
 - For server-request-backed approvals or forms, a local reply is not the terminal boundary. Treat `serverRequest/resolved` as the only authoritative resume and cleanup point.
 - Treat server-request cards such as approvals, tool user input, and elicitation as substantive turn content. They must stay in the same Feishu reply context as the turn when possible, and final output must not be patched backward over them.
+- Codex async questions arrive as `agentMessage` items with `delivery=async` and `questions`, even when `phase=final_answer`. Normalize them as user input, never as final output or a completion fallback. Their local forms remain answerable after the producing turn completes; answers use ordinary conversation continuation, not JSON-RPC server-request replies, and must stay in the same frontend and thread.
 - For inline review, keep the `review/start` response turn id as the primary binding. A later `turn/started.turn.id` may differ and must not steal ownership.
 - `item/started` may arrive before `turn/started` for review and approval flows. Preserve early-binding logic unless the protocol contract itself changes.
 
@@ -327,7 +331,7 @@ If Feidex adds another backend, keep these rules:
 
 Important current assumptions:
 
-- Session identity differs between p2p and group reply trees.
+- Feishu session identity is `frontend_id + chat_id`; chat type, user, root message, binding, workspace, and backend context stay as metadata.
 - Outbound message creation and patching are paced in `internal/feishu/message_rate_limit.go`.
 - New message creation is globally paced.
 - Card patching is paced per message ID.
@@ -397,7 +401,7 @@ Implementation rule:
 When a change touches one of these contracts, prefer updating the existing guard tests instead of relying only on broad `go test ./...` coverage:
 
 - Turn, thread, and submission lifecycle: `internal/app/critical_paths_test.go`, `internal/app/critical_paths_more_test.go`, `internal/app/state_machine_contracts_test.go`, `internal/app/protocol_business_logic_test.go`
-- Server requests, approvals, tool user input, and elicitation: `internal/app/item_started_server_request_test.go`, `internal/app/notifications_branches_more_test.go`, `internal/app/critical_paths_more_test.go`, `internal/app/app_more_test.go`, `internal/app/quiet_working_card_test.go`
+- Server requests, approvals, tool user input, and elicitation: `internal/app/item_started_server_request_test.go`, `internal/app/notifications_branches_more_test.go`, `internal/app/critical_paths_more_test.go`, `internal/app/app_more_test.go`, `internal/app/quiet_working_card_test.go`, `internal/app/async_user_input_test.go`
 - Review lifecycle and target mapping: `internal/app/review_critical_test.go`, `internal/app/review_test.go`, plus the live review tests under `internal/codexrpc`
 - Workspace new, clone, and path picker flows: `internal/app/path_picker_test.go`, `internal/app/actions_dispatch_more_test.go`, `internal/app/app_more_test.go`
 - Upgrade and backend maintenance: `internal/app/upgrade_isolation_test.go`, `internal/app/upgrade_more_test.go`, `internal/app/codex_upgrade_test.go`, `internal/app/claude_upgrade_test.go`

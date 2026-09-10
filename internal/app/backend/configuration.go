@@ -26,7 +26,7 @@ import (
 
 const (
 	// ClaudeWorkspaceCommandUsage is the usage string for /workspace in Claude mode.
-	ClaudeWorkspaceCommandUsage = "/workspace | /workspace list | /workspace new | /workspace clone GIT_URL [ID] [--parent DIR] | /workspace use ID | /workspace delete [ID] | /workspace permissions [MODE|inherit]"
+	ClaudeWorkspaceCommandUsage = "/workspace | /workspace list | /workspace new | /workspace new worktree [BRANCH] [ID] | /workspace clone GIT_URL [ID] [--parent DIR] | /workspace use ID | /workspace delete [ID] | /workspace permissions [MODE|inherit]"
 )
 
 // ConfigurationService handles backend-specific configuration display and
@@ -47,8 +47,10 @@ type ConfigurationCommandDeps struct {
 }
 
 type ConfigurationClaudeDeps struct {
-	CompleteModelSet  func(action *feishu.CardAction, modelID string) (*callback.CardActionTriggerResponse, error)
-	CompleteEffortSet func(action *feishu.CardAction, effort string) (*callback.CardActionTriggerResponse, error)
+	CompleteModelSet          func(action *feishu.CardAction, modelID string) (*callback.CardActionTriggerResponse, error)
+	CompleteModelOptionAdd    func(action *feishu.CardAction) (*callback.CardActionTriggerResponse, error)
+	CompleteModelOptionRemove func(action *feishu.CardAction) (*callback.CardActionTriggerResponse, error)
+	CompleteEffortSet         func(action *feishu.CardAction, effort string) (*callback.CardActionTriggerResponse, error)
 }
 
 type ConfigurationCodexDeps struct {
@@ -114,6 +116,26 @@ func (s ConfigurationService) CompleteClaudeEffortSet(action *feishu.CardAction,
 		return nil, fmt.Errorf("Claude effort set handler not configured")
 	}
 	return s.deps.Claude.CompleteEffortSet(action, effort)
+}
+
+func (s ConfigurationService) CompleteClaudeModelOptionAdd(action *feishu.CardAction) (*callback.CardActionTriggerResponse, error) {
+	if appcore.ConfiguredBackend(s.App) != appruntime.BackendClaude {
+		return unsupportedBackendActionResponse(appcore.ConfiguredBackend(s.App)), nil
+	}
+	if s.deps.Claude.CompleteModelOptionAdd == nil {
+		return nil, fmt.Errorf("Claude model option add handler not configured")
+	}
+	return s.deps.Claude.CompleteModelOptionAdd(action)
+}
+
+func (s ConfigurationService) CompleteClaudeModelOptionRemove(action *feishu.CardAction) (*callback.CardActionTriggerResponse, error) {
+	if appcore.ConfiguredBackend(s.App) != appruntime.BackendClaude {
+		return unsupportedBackendActionResponse(appcore.ConfiguredBackend(s.App)), nil
+	}
+	if s.deps.Claude.CompleteModelOptionRemove == nil {
+		return nil, fmt.Errorf("Claude model option remove handler not configured")
+	}
+	return s.deps.Claude.CompleteModelOptionRemove(action)
 }
 
 func (s ConfigurationService) FetchModelList(ctx context.Context) (codexrpc.ModelListResult, error) {
@@ -399,7 +421,7 @@ func (s ConfigurationService) CompleteCodexGlobalModelSet(action *feishu.CardAct
 		return &callback.CardActionTriggerResponse{Toast: &callback.Toast{Type: "error", Content: err.Error()}}, nil
 	}
 	return &callback.CardActionTriggerResponse{
-		Toast: &callback.Toast{Type: "success", Content: "已更新全局模型"},
+		Toast: &callback.Toast{Type: "success", Content: "已更新 Bot 默认模型"},
 		Card:  RawCard(s.RenderModelConfigCard(result, sessionKey, menuAction)),
 	}, nil
 }
@@ -447,7 +469,7 @@ func (s ConfigurationService) CompleteCodexGlobalReasoningEffortSet(action *feis
 		return &callback.CardActionTriggerResponse{Toast: &callback.Toast{Type: "error", Content: err.Error()}}, nil
 	}
 	return &callback.CardActionTriggerResponse{
-		Toast: &callback.Toast{Type: "success", Content: "已更新全局推理强度"},
+		Toast: &callback.Toast{Type: "success", Content: "已更新 Bot 默认推理强度"},
 		Card:  RawCard(s.RenderModelConfigCard(result, sessionKey, menuAction)),
 	}, nil
 }
@@ -542,8 +564,8 @@ func (s ConfigurationService) RenderCodexStatusBody(sess *state.Session) string 
 		"工作区: `" + workspaceID + "`",
 		"线程: " + conversationLabel,
 		"thread_id: `" + conversationID + "`",
-		"全局模型: `" + model + "`",
-		"全局推理强度: `" + effort + "`",
+		"Bot 默认模型: `" + model + "`",
+		"Bot 默认推理强度: `" + effort + "`",
 		"auto retry: `" + map[bool]string{true: "on", false: "off"}[autoRetryEnabled(s.App)] + "`",
 		"quiet: `" + appquietmode.StatusText(appquietmode.Mode(feishuCfg)) + "`",
 		"queue_len: `" + fmt.Sprintf("%d", queueLen) + "`",

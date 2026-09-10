@@ -260,6 +260,24 @@ func TestPermissionIssueFromError(t *testing.T) {
 	}
 }
 
+func TestAnnouncementAPIErrorProvidesPermissionIssue(t *testing.T) {
+	err := &AnnouncementAPIError{
+		Op:   "docx.chat_announcement_block.list",
+		Code: 99991672,
+		Msg:  "Access denied. One of the following scopes is required: [im:chat.announcement:read].",
+	}
+	issue, ok := PermissionIssueFromError(err)
+	if !ok || issue == nil {
+		t.Fatal("expected PermissionIssueFromError to extract announcement issue")
+	}
+	if issue.API != "docx.chat_announcement_block.list" || issue.Code != 99991672 {
+		t.Fatalf("announcement permission issue = %+v", issue)
+	}
+	if !strings.Contains(issue.Message, "im:chat.announcement:read") || !strings.Contains(issue.Cause, "feishu announcement api error") {
+		t.Fatalf("announcement permission issue lost context: %+v", issue)
+	}
+}
+
 func TestPermissionIssueWrapperHelpers(t *testing.T) {
 	var wrapped *permissionIssueError
 	if got := wrapped.Error(); got != "" {
@@ -289,6 +307,26 @@ func TestPermissionIssueWrapperHelpers(t *testing.T) {
 	}
 	if got := wrapPermissionIssue(baseErr, nil); got != baseErr {
 		t.Fatalf("wrapPermissionIssue(err, nil) = %v, want original error", got)
+	}
+}
+
+func TestMarkdownLinkEscapesLabel(t *testing.T) {
+	got := MarkdownLink("开通[权限]", "https://open.feishu.cn/app/scope?q=im:message")
+	want := `[开通\[权限\]](https://open.feishu.cn/app/scope?q=im:message)`
+	if got != want {
+		t.Fatalf("MarkdownLink() = %q, want %q", got, want)
+	}
+}
+
+func TestRenderPermissionIssueBodyIncludesApplicationLink(t *testing.T) {
+	url := "https://open.feishu.cn/app/cli_a945cd72cafb1cb5/auth?q=im:chat.announcement:read&op_from=openapi&token_type=tenant"
+	body := RenderPermissionIssueBody(&PermissionIssue{
+		API:     "docx.chat_announcement_block.list",
+		Code:    99991672,
+		Message: "应用尚未开通所需的应用身份权限，点击链接申请并开通任一权限即可：" + url,
+	})
+	if !strings.Contains(body, "申请权限: [申请权限]("+url+")") {
+		t.Fatalf("RenderPermissionIssueBody() = %q, want clickable application link", body)
 	}
 }
 
@@ -331,7 +369,7 @@ func TestSimpleStatusCardAndSummaries(t *testing.T) {
 }
 
 func TestConvertMessageTextFlow(t *testing.T) {
-	a := New(config.FeishuConfig{GroupAtOnly: true})
+	a := New(config.FeishuConfig{})
 	a.botOpenID = "bot-1"
 
 	msgType := "text"
@@ -383,56 +421,6 @@ func TestConvertMessageTextFlow(t *testing.T) {
 		t.Fatalf("expected duplicate message to be suppressed, got %+v", duplicate)
 	}
 
-	noMention := New(config.FeishuConfig{GroupAtOnly: true})
-	noMention.botOpenID = "bot-1"
-	if got := noMention.convertMessage(&larkim.P2MessageReceiveV1{
-		Event: &larkim.P2MessageReceiveV1Data{
-			Sender: &larkim.EventSender{SenderId: &larkim.UserId{OpenId: &userID}},
-			Message: &larkim.EventMessage{
-				MessageId:   strPtr("msg-2"),
-				ChatType:    &chatType,
-				MessageType: &msgType,
-				Content:     &content,
-			},
-		},
-	}); got != nil {
-		t.Fatalf("expected group message without bot mention to be ignored, got %+v", got)
-	}
-
-	noBotID := New(config.FeishuConfig{GroupAtOnly: true})
-	if got := noBotID.convertMessage(&larkim.P2MessageReceiveV1{
-		Event: &larkim.P2MessageReceiveV1Data{
-			Sender: &larkim.EventSender{SenderId: &larkim.UserId{OpenId: &userID}},
-			Message: &larkim.EventMessage{
-				MessageId:   strPtr("msg-2b"),
-				ChatType:    &chatType,
-				MessageType: &msgType,
-				Content:     &content,
-			},
-		},
-	}); got != nil {
-		t.Fatalf("expected GroupAtOnly to fail closed without bot open id, got %+v", got)
-	}
-
-	everyoneKey := "@all"
-	everyoneName := "所有人"
-	allAdapter := New(config.FeishuConfig{GroupAtOnly: true, RespondToAtEveryone: true})
-	allAdapter.botOpenID = "bot-1"
-	got = allAdapter.convertMessage(&larkim.P2MessageReceiveV1{
-		Event: &larkim.P2MessageReceiveV1Data{
-			Sender: &larkim.EventSender{SenderId: &larkim.UserId{OpenId: &userID}},
-			Message: &larkim.EventMessage{
-				MessageId:   strPtr("msg-3"),
-				ChatType:    &chatType,
-				MessageType: &msgType,
-				Content:     strPtr(`{"text":"@all ping"}`),
-				Mentions:    []*larkim.MentionEvent{{Key: &everyoneKey, Name: &everyoneName}},
-			},
-		},
-	})
-	if got == nil || got.Text != "@all ping" {
-		t.Fatalf("expected @all message to pass through, got %+v", got)
-	}
 }
 
 func TestConvertMessageAttachmentsRecallAndReaction(t *testing.T) {
@@ -616,20 +604,14 @@ func TestAdapterHelperFunctions(t *testing.T) {
 	}
 
 	mentionKey := "@bot"
-	everyoneKey := "@all"
-	everyoneName := "Everyone"
 	mentions := []*larkim.MentionEvent{
 		{Key: &mentionKey, Id: &larkim.UserId{OpenId: strPtr("bot-1")}},
-		{Key: &everyoneKey, Name: &everyoneName},
 	}
 	if got := stripBotMention("@bot hello", mentions, "bot-1"); got != "hello" {
 		t.Fatalf("stripBotMention() = %q, want hello", got)
 	}
 	if !mentioned(mentions, "bot-1") {
 		t.Fatal("mentioned() should find bot open id")
-	}
-	if !mentionedEveryone(mentions) {
-		t.Fatal("mentionedEveryone() should recognize @all")
 	}
 
 	if got := parseReactionUserID(&larkim.UserId{OpenId: strPtr("open"), UserId: strPtr("user"), UnionId: strPtr("union")}); got != "open" {
@@ -788,8 +770,8 @@ func TestFetchBotOpenIDHandlesFailuresQuickly(t *testing.T) {
 	})
 	defer func() { http.DefaultTransport = transport }()
 
-	if got := (&Adapter{cfg: config.FeishuConfig{AppID: "app", AppSecret: "secret"}}).fetchBotOpenID(); got != "" {
-		t.Fatalf("fetchBotOpenID() = %q, want empty on transport error", got)
+	if got := (&Adapter{cfg: config.FeishuConfig{AppID: "app", AppSecret: "secret"}}).fetchBotProfile(); got != (botProfile{}) {
+		t.Fatalf("fetchBotProfile() = %+v, want empty on transport error", got)
 	}
 }
 

@@ -68,4 +68,11 @@ type FeishuClient interface {
 	SimpleStatusCard(string, string, string, []feishu.Button) map[string]any
 	UrgentApp(context.Context, string, string) error
 	LookupMessageSenderOpenID(context.Context, string) (string, error)
+	GetGroupBotCount(context.Context, string) (int, error)
+	ListAnnouncementBlocks(context.Context, string) ([]feishu.AnnouncementBlock, error)
+	CreateAnnouncementTextBlock(context.Context, string, string, string, string) (feishu.AnnouncementBlock, error)
+	CreateAnnouncementTextBlockAt(context.Context, string, string, string, string, int) (feishu.AnnouncementBlock, error)
+	UpdateAnnouncementTextBlock(context.Context, string, string, string, string) error
+	BotOpenID() string
+	BotName() string
 }

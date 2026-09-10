@@ -28,7 +28,7 @@ func TestCommandNewRejectsRunningTurn(t *testing.T) {
 
 	a := &App{store: store}
 	if err := a.store.UpsertSession(&state.Session{
-		Key:            "feishu:p2p:chat:user",
+		Key:            "feishu:chat:chat",
 		WorkspaceID:    "default",
 		ActiveThreadID: "thread-1",
 		ActiveTurnID:   "turn-1",
@@ -57,7 +57,7 @@ func TestHandleCommandStopClearsQueuedInputsBeforeInterrupt(t *testing.T) {
 
 	a := &App{store: store, codex: codexrpc.New(config.CodexConfig{}), cfg: testCodexConfig()}
 	if err := a.store.UpsertSession(&state.Session{
-		Key:            "feishu:p2p:chat:user",
+		Key:            "feishu:chat:chat",
 		WorkspaceID:    "default",
 		ActiveThreadID: "thread-1",
 		ActiveTurnID:   "turn-1",
@@ -67,7 +67,7 @@ func TestHandleCommandStopClearsQueuedInputsBeforeInterrupt(t *testing.T) {
 	}
 	if _, err := a.store.CreateSubmission(&state.Submission{
 		ID:               "sub-queued",
-		SessionKey:       "feishu:p2p:chat:user",
+		SessionKey:       "feishu:chat:chat",
 		WorkspaceID:      "default",
 		TriggerMessageID: "msg-queued",
 		SourceMessageIDs: []string{"msg-queued"},
@@ -87,7 +87,7 @@ func TestHandleCommandStopClearsQueuedInputsBeforeInterrupt(t *testing.T) {
 	if !strings.Contains(err.Error(), "client not started") {
 		t.Fatalf("unexpected /stop error: %v", err)
 	}
-	sess := a.store.GetSession("feishu:p2p:chat:user")
+	sess := a.store.GetSession("feishu:chat:chat")
 	if sess == nil {
 		t.Fatal("expected session to remain")
 	}
@@ -116,7 +116,7 @@ func TestHandleCommandBlockedWhileBackendSwitching(t *testing.T) {
 func TestHandleCommandWorkspaceUseRejectsRunningTurn(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.cfg.Workspaces = append(a.cfg.Workspaces, config.Workspace{ID: "alt", Cwd: t.TempDir()})
-	sessionKey := "feishu:p2p:chat:user"
+	sessionKey := "feishu:chat:chat"
 	if err := a.store.UpsertSession(&state.Session{
 		Key:                     sessionKey,
 		WorkspaceID:             "default",
@@ -153,7 +153,7 @@ func TestHandleCommandWorkspaceUseRejectsRunningTurn(t *testing.T) {
 func TestHandleCommandWorkspaceUseClearsIdleThreadLineage(t *testing.T) {
 	a, ff, fc := newTestApp(t)
 	a.cfg.Workspaces = append(a.cfg.Workspaces, config.Workspace{ID: "alt", Cwd: t.TempDir()})
-	sessionKey := "feishu:p2p:chat:user"
+	sessionKey := "feishu:chat:chat"
 	if err := a.store.UpsertSession(&state.Session{
 		Key:                     sessionKey,
 		WorkspaceID:             "default",
@@ -267,6 +267,10 @@ func TestIsLocalCommand(t *testing.T) {
 		"/workspace choose":          true,
 		"/workspace delete":          true,
 		"/workspace delete default":  true,
+		"/workspace new worktree":    true,
+		"/workspace new worktree work/bot/chat/default":       true,
+		"/workspace new worktree work/bot/chat/default repo2": true,
+		"/workspace clone": true,
 		"/workspace clone https://github.com/example/repo.git":                         true,
 		"/workspace clone git@github.com:example/repo.git repo-copy":                   true,
 		"/workspace clone https://github.com/example/repo.git --parent /home/yuhuan":   true,
@@ -293,6 +297,7 @@ func TestIsLocalCommand(t *testing.T) {
 		"/thread resume":                                                               false,
 		"/workspace use default extra":                                                 false,
 		"/workspace delete default extra":                                              false,
+		"/workspace new worktree work/bot/chat/default repo2 extra":                    false,
 		"/workspace clone https://github.com/example/repo.git repo-copy extra": false,
 		"/workspace clone https://github.com/example/repo.git --parent":        false,
 		"/workspace clone https://github.com/example/repo.git repo-copy /tmp":  false,
@@ -311,6 +316,21 @@ func TestIsLocalCommand(t *testing.T) {
 	}
 }
 
+func TestHandleCommandWorkspaceCloneWithoutURLOpensForm(t *testing.T) {
+	a, ff, _ := newTestApp(t)
+	msg := &feishu.InboundMessage{MessageID: "msg-clone", ChatID: "chat-clone", ChatType: "p2p", UserID: "user-1"}
+	if err := handleCommand(a, msg, "/workspace clone"); err != nil {
+		t.Fatalf("handleCommand(/workspace clone) error = %v", err)
+	}
+	cards := ff.replyCardsSnapshot()
+	if len(cards) != 1 {
+		t.Fatalf("reply cards = %d, want clone form card", len(cards))
+	}
+	if body := cardMarkdownContent(t, cards[0]); !strings.Contains(body, "从仓库创建") || !strings.Contains(body, "Git 地址") {
+		t.Fatalf("/workspace clone reply body = %q, want clone form", body)
+	}
+}
+
 func TestIsLocalCommandForClaudeBackend(t *testing.T) {
 	cases := map[string]bool{
 		"/history":                           true,
@@ -326,6 +346,7 @@ func TestIsLocalCommandForClaudeBackend(t *testing.T) {
 		"/workspace permissions":             true,
 		"/workspace permissions inherit":     true,
 		"/workspace choose":                  true,
+		"/workspace clone":                   true,
 		"/review":                            false,
 		"/review custom 请重点看":                false,
 		"/skills":                            false,
@@ -447,7 +468,7 @@ func TestHandleCommandPassthroughsUnsupportedLocalCommandsToClaude(t *testing.T)
 			if got := claude.startTurnCalls[0].prompt; got != raw {
 				t.Fatalf("Claude passthrough prompt = %q, want %q", got, raw)
 			}
-			sess := a.store.GetSession("feishu:p2p:chat:user")
+			sess := a.store.GetSession("feishu:chat:chat")
 			if sess == nil || strings.TrimSpace(sess.ActiveSubmissionID) == "" {
 				t.Fatalf("session after Claude passthrough = %+v", sess)
 			}
@@ -494,18 +515,22 @@ func TestSendCommandMenuListsTopLevelCommands(t *testing.T) {
 	_ = msg
 }
 
-func TestStartupReadyChatIDsDeduplicatesChats(t *testing.T) {
+func TestStartupReadyChatIDsDeduplicatesP2PChats(t *testing.T) {
 	ids := startupReadyChatIDs([]*state.Session{
-		{ChatID: "chat-b"},
-		{ChatID: "chat-a"},
-		{ChatID: "chat-b"},
+		{ChatID: "chat-b", ChatType: "p2p"},
+		{ChatID: "chat-a", ChatType: "p2p"},
+		{ChatID: "chat-b", ChatType: "p2p"},
+		{Key: "feishu:frontend:default:chat:chat-key", ChatType: "p2p"},
+		{ChatID: "chat-group", ChatType: "group"},
+		{Key: "feishu:frontend:default:chat:chat-key-group", ChatType: "group"},
+		{ChatID: "chat-legacy"},
 		{ChatID: ""},
 		nil,
 	})
-	if len(ids) != 2 {
+	if len(ids) != 3 {
 		t.Fatalf("unexpected chat id count: %#v", ids)
 	}
-	if ids[0] != "chat-a" || ids[1] != "chat-b" {
+	if ids[0] != "chat-a" || ids[1] != "chat-b" || ids[2] != "chat-key" {
 		t.Fatalf("unexpected sorted chat ids: %#v", ids)
 	}
 }
@@ -518,7 +543,7 @@ func TestCommandFastTogglesAndSupportsConfigCard(t *testing.T) {
 	ff := &fakeFeishuClient{}
 	a := &App{store: store, feishu: ff}
 	if err := a.store.UpsertSession(&state.Session{
-		Key:                     "feishu:p2p:chat:user",
+		Key:                     "feishu:chat:chat",
 		WorkspaceID:             "default",
 		ActiveThreadID:          "thread-1",
 		ActiveThreadWorkspaceID: "default",
@@ -529,7 +554,7 @@ func TestCommandFastTogglesAndSupportsConfigCard(t *testing.T) {
 	if err := commandFast(a, msg, nil); err != nil {
 		t.Fatalf("commandFast(toggle to fast) error = %v", err)
 	}
-	sess := a.store.GetSession("feishu:p2p:chat:user")
+	sess := a.store.GetSession("feishu:chat:chat")
 	if sess == nil || sess.ActiveThreadServiceTier != "fast" {
 		t.Fatalf("expected service tier fast, got %#v", sess)
 	}
@@ -542,7 +567,7 @@ func TestCommandFastTogglesAndSupportsConfigCard(t *testing.T) {
 	if err := commandFast(a, msg, []string{"default"}); err != nil {
 		t.Fatalf("commandFast(set default) error = %v", err)
 	}
-	sess = a.store.GetSession("feishu:p2p:chat:user")
+	sess = a.store.GetSession("feishu:chat:chat")
 	if sess == nil || sess.ActiveThreadServiceTier != "" {
 		t.Fatalf("expected service tier default, got %#v", sess)
 	}
@@ -557,7 +582,7 @@ func TestCommandCompactCallsThreadCompactStart(t *testing.T) {
 	ff := &fakeFeishuClient{}
 	a := &App{store: store, codex: fc, feishu: ff, cfg: testCodexConfig()}
 	if err := a.store.UpsertSession(&state.Session{
-		Key:            "feishu:p2p:chat:user",
+		Key:            "feishu:chat:chat",
 		WorkspaceID:    "default",
 		ActiveThreadID: "thread-1",
 	}); err != nil {
@@ -583,7 +608,7 @@ func TestCommandCompactCallsThreadCompactStart(t *testing.T) {
 	if len(ff.replyTexts) == 0 || !strings.Contains(ff.replyTexts[0], "压缩当前线程上下文") {
 		t.Fatalf("compact reply = %#v, want success text", ff.replyTexts)
 	}
-	sess := a.store.GetSession("feishu:p2p:chat:user")
+	sess := a.store.GetSession("feishu:chat:chat")
 	if sess == nil || sess.Status != sessionStatusCompacting {
 		t.Fatalf("session after /compact = %+v, want compacting", sess)
 	}
@@ -597,7 +622,7 @@ func TestCommandCompactRestoresSessionWhenRPCFails(t *testing.T) {
 	fc := &fakeCodexClient{callErr: context.DeadlineExceeded}
 	a := &App{store: store, codex: fc, feishu: &fakeFeishuClient{}, cfg: testCodexConfig()}
 	if err := a.store.UpsertSession(&state.Session{
-		Key:            "feishu:p2p:chat:user",
+		Key:            "feishu:chat:chat",
 		WorkspaceID:    "default",
 		ActiveThreadID: "thread-1",
 		Status:         "idle",
@@ -609,7 +634,7 @@ func TestCommandCompactRestoresSessionWhenRPCFails(t *testing.T) {
 	if err := commandCompact(a, msg, nil); err == nil {
 		t.Fatal("expected commandCompact() to fail")
 	}
-	sess := a.store.GetSession("feishu:p2p:chat:user")
+	sess := a.store.GetSession("feishu:chat:chat")
 	if sess == nil || sess.Status != "idle" || sess.ActiveTurnID != "" {
 		t.Fatalf("session after failed /compact = %+v, want idle without turn", sess)
 	}
@@ -638,7 +663,7 @@ func TestHandleCommandCompactPassthroughsToClaude(t *testing.T) {
 	if len(claude.startTurnCalls) != 1 || !strings.Contains(claude.startTurnCalls[0].prompt, "/compact") {
 		t.Fatalf("Claude startTurn calls = %#v", claude.startTurnCalls)
 	}
-	sess := a.store.GetSession("feishu:p2p:chat:user")
+	sess := a.store.GetSession("feishu:chat:chat")
 	if sess == nil || strings.TrimSpace(sess.ActiveThreadID) == "" || strings.TrimSpace(sess.ActiveSubmissionID) == "" {
 		t.Fatalf("session after Claude /compact = %+v", sess)
 	}
@@ -658,7 +683,7 @@ func TestCommandForkCallsThreadForkAndSwitchesSession(t *testing.T) {
 	cfg := testCodexConfig()
 	a := &App{store: store, codex: fc, feishu: ff, cfg: cfg}
 	if err := a.store.UpsertSession(&state.Session{
-		Key:                        "feishu:p2p:chat:user",
+		Key:                        "feishu:chat:chat",
 		WorkspaceID:                "default",
 		ActiveThreadID:             "thread-1",
 		ActiveThreadWorkspaceID:    "default",
@@ -704,7 +729,7 @@ func TestCommandForkCallsThreadForkAndSwitchesSession(t *testing.T) {
 	if got, _ := gotParams["serviceTier"].(string); got != serviceTierFast {
 		t.Fatalf("fork serviceTier = %q, want %q", got, serviceTierFast)
 	}
-	sess := a.store.GetSession("feishu:p2p:chat:user")
+	sess := a.store.GetSession("feishu:chat:chat")
 	if sess == nil || sess.ActiveThreadID != "thread-forked" || sess.ActiveThreadName != "Forked Thread" || sess.Status != "idle" {
 		t.Fatalf("session after /fork = %+v", sess)
 	}
@@ -758,7 +783,7 @@ func TestClaudeForkCommandsStartNewSession(t *testing.T) {
 			}
 			a.claude = claude
 
-			sessionKey := "feishu:p2p:chat:user"
+			sessionKey := "feishu:chat:chat"
 			if err := a.store.UpsertSession(&state.Session{
 				Key:                     sessionKey,
 				WorkspaceID:             a.cfg.Workspaces[0].ID,
@@ -806,7 +831,7 @@ func TestClaudeForkCommandsPreparePendingSessionWhenIDNotReady(t *testing.T) {
 	}
 	a.claude = claude
 
-	sessionKey := "feishu:p2p:chat:user"
+	sessionKey := "feishu:chat:chat"
 	if err := a.store.UpsertSession(&state.Session{
 		Key:                     sessionKey,
 		WorkspaceID:             a.cfg.Workspaces[0].ID,

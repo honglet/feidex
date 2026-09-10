@@ -57,6 +57,50 @@ func (r *feishuEventRouter) processMessage(msg *feishu.InboundMessage) error {
 	if msg == nil {
 		return nil
 	}
+	if msg.ChatType == "group" {
+		scheduleGroupAnnouncementStatusRefresh(a, msg.ChatID, "group_message")
+		if _, err := ensureGroupPrimaryInitialized(context.Background(), a, msg.ChatType, msg.ChatID); err != nil {
+			slog.Warn("group primary auto init failed during message processing",
+				"frontend_id", strings.TrimSpace(a.FrontendID()),
+				"message_id", msg.MessageID,
+				"chat_id", msg.ChatID,
+				"error", err,
+			)
+		}
+		if handled, err := syncGroupPrimaryAssignment(a, msg); handled || err != nil {
+			if err != nil {
+				return err
+			}
+			slog.Debug("feishu group primary assignment synced by non-target bot",
+				"frontend_id", strings.TrimSpace(a.FrontendID()),
+				"message_id", msg.MessageID,
+				"chat_id", msg.ChatID,
+				"owner_bot_open_id", groupPrimaryOwnerOpenID(a, msg.ChatType, msg.ChatID),
+			)
+			return nil
+		}
+	}
+	if msg.ChatType == "group" && !shouldAcceptGroupMessage(
+		a,
+		msg.ChatID,
+		groupPolicyRootMessageID(msg),
+		msg.ParentMessageID,
+		msg.MentionedSelf,
+		msg.MentionedAny || len(msg.MentionedOpenIDs) > 0,
+	) {
+		slog.Debug("feishu group message ignored by app group policy",
+			"frontend_id", strings.TrimSpace(a.FrontendID()),
+			"message_id", msg.MessageID,
+			"chat_id", msg.ChatID,
+			"root_message_id", msg.RootMessageID,
+			"policy_root_message_id", groupPolicyRootMessageID(msg),
+			"parent_message_id", msg.ParentMessageID,
+			"mentioned_self", msg.MentionedSelf,
+			"mention_count", len(msg.MentionedOpenIDs),
+			"mentioned_any", msg.MentionedAny,
+		)
+		return nil
+	}
 	sessionKey := makeSessionKey(a, msg)
 	logText := truncate(msg.Text, 160)
 	if a.ServerRequestService().ShouldRedactInboundText(sessionKey, msg.UserID) {
@@ -76,6 +120,9 @@ func (r *feishuEventRouter) processMessage(msg *feishu.InboundMessage) error {
 	if len(msg.MergeForwardMessageIDs) > 0 {
 		startMergeForwardPrefetch(a, msg)
 		return nil
+	}
+	if handled, err := newBindingService(a).gatePendingGroupMessage(msg); handled || err != nil {
+		return err
 	}
 	if !hasConfiguredBackend(a) {
 		if strings.TrimSpace(msg.Text) == "" && len(msg.Attachments) == 0 {
@@ -98,7 +145,7 @@ func (r *feishuEventRouter) processMessage(msg *feishu.InboundMessage) error {
 		}
 	}
 	if !msg.ExpandedMergeForward && strings.HasPrefix(strings.TrimSpace(msg.Text), "/") {
-		if isLocalCommandForBackend(configuredBackend(a), strings.TrimSpace(msg.Text)) {
+		if isLocalCommandForMessage(configuredBackend(a), msg, strings.TrimSpace(msg.Text)) {
 			if err := handleCommand(a, msg, strings.TrimSpace(msg.Text)); err != nil {
 				return err
 			}
@@ -148,12 +195,30 @@ func (r *feishuEventRouter) processMessage(msg *feishu.InboundMessage) error {
 	return nil
 }
 
+func groupPolicyRootMessageID(msg *feishu.InboundMessage) string {
+	if msg == nil {
+		return ""
+	}
+	rootMessageID := strings.TrimSpace(msg.RootMessageID)
+	if rootMessageID == "" {
+		return ""
+	}
+	if strings.TrimSpace(msg.ParentMessageID) == "" && rootMessageID == strings.TrimSpace(msg.MessageID) {
+		return ""
+	}
+	return rootMessageID
+}
+
 func (r *feishuEventRouter) handleRecall(recall *feishu.MessageRecall) {
 	a := r.app
 	if recall == nil || strings.TrimSpace(recall.MessageID) == "" {
 		return
 	}
-	if discarded := newPendingQueueService(a).discardPendingInputByMessageID(recall.MessageID); discarded {
+	discarded := newPendingQueueService(a).discardPendingInputByMessageID(recall.MessageID)
+	if discardPendingBindingMessageByID(a, recall.MessageID) {
+		discarded = true
+	}
+	if discarded {
 		slog.Debug("feishu recall discarded pending input", "message_id", recall.MessageID, "chat_id", recall.ChatID)
 	}
 }
@@ -166,7 +231,11 @@ func (r *feishuEventRouter) handleReaction(reaction *feishu.MessageReaction) {
 	if !strings.EqualFold(strings.TrimSpace(reaction.EmojiType), discardReactionEmoji) {
 		return
 	}
-	if discarded := newPendingQueueService(a).discardPendingInputByMessageID(reaction.MessageID); discarded {
+	discarded := newPendingQueueService(a).discardPendingInputByMessageID(reaction.MessageID)
+	if discardPendingBindingMessageByID(a, reaction.MessageID) {
+		discarded = true
+	}
+	if discarded {
 		slog.Debug("feishu reaction discarded pending input",
 			"message_id", reaction.MessageID,
 			"chat_id", reaction.ChatID,

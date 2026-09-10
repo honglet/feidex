@@ -95,6 +95,14 @@ func MatchModelCommand(fields []string) bool {
 			return false
 		}
 	case 4:
+		if strings.TrimSpace(fields[1]) == "option" {
+			switch strings.TrimSpace(fields[2]) {
+			case "add", "remove", "delete", "rm":
+				return strings.TrimSpace(fields[3]) != ""
+			default:
+				return false
+			}
+		}
 		if strings.TrimSpace(fields[1]) != "plan" {
 			return false
 		}
@@ -127,7 +135,7 @@ func MatchThreadCommand(fields []string) bool {
 		return len(fields) == 2
 	case "resume":
 		return len(fields) == 3
-	case "sandbox", "policy":
+	case "sandbox", "policy", "multiagent":
 		return len(fields) == 2 || len(fields) == 3
 	default:
 		return false
@@ -195,13 +203,22 @@ func MatchWorkspaceCommand(fields []string) bool {
 		return true
 	}
 	switch strings.TrimSpace(fields[1]) {
-	case "list", "new", "choose":
+	case "list", "choose":
+		return len(fields) == 2
+	case "new":
+		if len(fields) >= 3 && strings.TrimSpace(fields[2]) == "worktree" {
+			_, _, err := appworkspace.ParseWorktreeArgs(fields[1:])
+			return err == nil
+		}
 		return len(fields) == 2
 	case "delete":
 		return len(fields) == 2 || len(fields) == 3
-	case "sandbox", "policy", "permissions":
+	case "sandbox", "policy", "permissions", "multiagent":
 		return len(fields) == 2 || len(fields) == 3
 	case "clone":
+		if len(fields) == 2 {
+			return true
+		}
 		_, _, _, err := appworkspace.ParseCloneArgs(fields[1:])
 		return err == nil
 	case "use":
@@ -216,11 +233,20 @@ func MatchClaudeWorkspaceCommand(fields []string) bool {
 		return true
 	}
 	switch strings.TrimSpace(fields[1]) {
-	case "list", "new", "choose":
+	case "list", "choose":
+		return len(fields) == 2
+	case "new":
+		if len(fields) >= 3 && strings.TrimSpace(fields[2]) == "worktree" {
+			_, _, err := appworkspace.ParseWorktreeArgs(fields[1:])
+			return err == nil
+		}
 		return len(fields) == 2
 	case "delete":
 		return len(fields) == 2 || len(fields) == 3
 	case "clone":
+		if len(fields) == 2 {
+			return true
+		}
 		_, _, _, err := appworkspace.ParseCloneArgs(fields[1:])
 		return err == nil
 	case "use":

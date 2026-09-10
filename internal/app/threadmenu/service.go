@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -29,7 +30,7 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	ThreadCommandUsage        = "/thread | /thread list [all] | /thread new | /thread fork | /thread resume THREAD_ID | /thread sandbox [MODE] | /thread policy [POLICY]"
+	ThreadCommandUsage        = "/thread | /thread list [all] | /thread new | /thread fork | /thread resume THREAD_ID | /thread sandbox [MODE] | /thread policy [POLICY] | /thread multiagent [MODE]"
 	ClaudeSessionCommandUsage = "/session | /session list [all] | /session new | /session fork | /session resume SESSION_ID | /session permissions [MODE|inherit]"
 )
 
@@ -95,7 +96,12 @@ type App interface {
 // AppStateProvider narrows app state access to the methods used by the service.
 type AppStateProvider interface {
 	Session(key string) *state.Session
+	Sessions() []*state.Session
 	SaveSession(sess *state.Session) error
+}
+
+type effectiveSessionKeyProvider interface {
+	ThreadMenuEffectiveSessionKey(sessionKey string) string
 }
 
 // ConversationBackendProvider narrows conversation backend access to the
@@ -314,6 +320,154 @@ func NewService(app App) *Service {
 	return &Service{app: app}
 }
 
+func (s *Service) effectiveSessionKey(sessionKey string) string {
+	sessionKey = strings.TrimSpace(sessionKey)
+	if s == nil || s.app == nil {
+		return sessionKey
+	}
+	provider, ok := s.app.(effectiveSessionKeyProvider)
+	if !ok || provider == nil {
+		return sessionKey
+	}
+	resolved := strings.TrimSpace(provider.ThreadMenuEffectiveSessionKey(sessionKey))
+	if resolved == "" {
+		return sessionKey
+	}
+	return resolved
+}
+
+func (s *Service) messageForThreadMenu(msg *feishu.InboundMessage) (*feishu.InboundMessage, string) {
+	if msg == nil {
+		return nil, ""
+	}
+	sessionKey := appcore.MakeSessionKey(s.app, msg)
+	effectiveSessionKey := s.effectiveSessionKey(sessionKey)
+	if effectiveSessionKey == "" || effectiveSessionKey == sessionKey {
+		return msg, sessionKey
+	}
+	cp := *msg
+	cp.SessionKey = effectiveSessionKey
+	return &cp, effectiveSessionKey
+}
+
+func (s *Service) interruptSurfaceSessionKeys(sessionKey string) []string {
+	sessionKey = strings.TrimSpace(sessionKey)
+	keys := appendUniqueSessionKey(nil, sessionKey)
+	if s == nil || s.app == nil {
+		return keys
+	}
+	st := s.app.ThreadMenuAppState()
+	if st == nil {
+		return keys
+	}
+	chatType, chatID := sessionGroupChat(sessionKey, st.Session(sessionKey))
+	if chatType != "group" || strings.TrimSpace(chatID) == "" {
+		return keys
+	}
+	for _, sess := range st.Sessions() {
+		if sess == nil {
+			continue
+		}
+		candidateKey := strings.TrimSpace(sess.Key)
+		if candidateKey == "" || !appcore.SessionBelongsToFrontend(s.app, candidateKey) {
+			continue
+		}
+		candidateChatType, candidateChatID := sessionGroupChat(candidateKey, sess)
+		if candidateChatType == "group" && candidateChatID == chatID {
+			keys = appendUniqueSessionKey(keys, candidateKey)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func appendUniqueSessionKey(keys []string, key string) []string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return keys
+	}
+	for _, existing := range keys {
+		if strings.TrimSpace(existing) == key {
+			return keys
+		}
+	}
+	return append(keys, key)
+}
+
+func sessionGroupChat(sessionKey string, sess *state.Session) (chatType, chatID string) {
+	_, chatType, chatID, _, _ = appcore.ParseSessionKey(sessionKey)
+	if chatType == "" && sess != nil {
+		chatType = strings.TrimSpace(sess.ChatType)
+		chatID = strings.TrimSpace(sess.ChatID)
+	}
+	return chatType, chatID
+}
+
+func (s *Service) discardInterruptSurfacePendingInputs(sessionKeys []string) int {
+	if s == nil || s.app == nil {
+		return 0
+	}
+	pendingQueue := s.app.ThreadMenuPendingQueue()
+	if pendingQueue == nil {
+		return 0
+	}
+	discarded := 0
+	for _, key := range sessionKeys {
+		discarded += pendingQueue.DiscardSessionPendingInputs(key)
+	}
+	return discarded
+}
+
+func (s *Service) interruptTargetSession(sessionKeys []string) (string, *state.Session) {
+	if s == nil || s.app == nil {
+		return "", nil
+	}
+	st := s.app.ThreadMenuAppState()
+	if st == nil {
+		return "", nil
+	}
+	var bestKey string
+	var best *state.Session
+	for _, key := range sessionKeys {
+		sess := st.Session(key)
+		if !interruptSessionActive(sess) {
+			continue
+		}
+		if best == nil || sess.UpdatedAt > best.UpdatedAt || (sess.UpdatedAt == best.UpdatedAt && strings.TrimSpace(key) > strings.TrimSpace(bestKey)) {
+			bestKey = strings.TrimSpace(key)
+			best = sess
+		}
+	}
+	return bestKey, best
+}
+
+func interruptSessionActive(sess *state.Session) bool {
+	return sess != nil && strings.TrimSpace(sess.ActiveTurnID) != "" && strings.TrimSpace(sess.ActiveThreadID) != ""
+}
+
+func (s *Service) cancelInterruptSurfaceAutoRetry(sessionKeys []string, activeSessionKey string, activeSess *state.Session) bool {
+	if s == nil || s.app == nil {
+		return false
+	}
+	st := s.app.ThreadMenuAppState()
+	canceled := false
+	for _, key := range sessionKeys {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		sess := activeSess
+		if key != strings.TrimSpace(activeSessionKey) && st != nil {
+			sess = st.Session(key)
+		}
+		keepUntilTerminal := key == strings.TrimSpace(activeSessionKey) && interruptSessionActive(sess)
+		if s.app.CancelAutoRetry(key, keepUntilTerminal, "已停止当前 session 的自动重试。") {
+			canceled = true
+		}
+	}
+	return canceled
+}
+
 // ---------------------------------------------------------------------------
 // Thread listing and creation
 // ---------------------------------------------------------------------------
@@ -375,7 +529,10 @@ func (s *Service) StartFreshThread(sessionKey, userID, chatID, chatType string) 
 
 // CommandThreadsNew handles /thread new or /session new.
 func (s *Service) CommandThreadsNew(msg *feishu.InboundMessage) error {
-	sessionKey := appcore.MakeSessionKey(s.app, msg)
+	msg, sessionKey := s.messageForThreadMenu(msg)
+	if msg == nil {
+		return nil
+	}
 	discarded, binding, err := s.StartFreshThread(sessionKey, msg.UserID, msg.ChatID, msg.ChatType)
 	if err != nil {
 		return err
@@ -394,7 +551,11 @@ func (s *Service) CommandThreadsNew(msg *feishu.InboundMessage) error {
 
 // CommandThreads handles /thread list or /session list.
 func (s *Service) CommandThreads(msg *feishu.InboundMessage, includeAll bool) error {
-	card, err := s.app.ThreadMenuConversationBackend().RenderThreadsCard(appcore.MakeSessionKey(s.app, msg), includeAll)
+	msg, sessionKey := s.messageForThreadMenu(msg)
+	if msg == nil {
+		return nil
+	}
+	card, err := s.app.ThreadMenuConversationBackend().RenderThreadsCard(sessionKey, includeAll)
 	if err != nil {
 		return err
 	}
@@ -404,10 +565,13 @@ func (s *Service) CommandThreads(msg *feishu.InboundMessage, includeAll bool) er
 
 // CommandThread handles the /thread command with subcommands.
 func (s *Service) CommandThread(msg *feishu.InboundMessage, args []string) error {
+	msg, sessionKey := s.messageForThreadMenu(msg)
+	if msg == nil {
+		return nil
+	}
 	if len(args) == 0 {
 		return s.CommandThreads(msg, false)
 	}
-	sessionKey := appcore.MakeSessionKey(s.app, msg)
 	switch strings.TrimSpace(args[0]) {
 	case "list":
 		includeAll := false
@@ -440,7 +604,7 @@ func (s *Service) CommandThread(msg *feishu.InboundMessage, args []string) error
 			return err
 		}
 		return s.app.ReplyCommandActionResponse(msg, resp)
-	case "sandbox", "policy":
+	case "sandbox", "policy", "multiagent":
 		return appbackend.DriverForApp(s.app).Permission().HandleConversationCommand(appbackend.ConversationPermissionCommandRequest{
 			Message:    msg,
 			Args:       args,
@@ -454,11 +618,17 @@ func (s *Service) CommandThread(msg *feishu.InboundMessage, args []string) error
 			ShowConversationPolicyMenu: func(msg *feishu.InboundMessage) error {
 				return s.ShowThreadPolicyMenu(msg)
 			},
+			ShowConversationMultiAgentMenu: func(msg *feishu.InboundMessage) error {
+				return s.ShowThreadMultiAgentMenu(msg)
+			},
 			CompleteConversationSandboxSet: func(action *feishu.CardAction, sessionKey, threadID, sandboxMode string) (*callback.CardActionTriggerResponse, error) {
 				return s.CompleteThreadSandboxSet(action, sessionKey, threadID, sandboxMode)
 			},
 			CompleteConversationPolicySet: func(action *feishu.CardAction, sessionKey, threadID, approvalPolicy string) (*callback.CardActionTriggerResponse, error) {
 				return s.CompleteThreadPolicySet(action, sessionKey, threadID, approvalPolicy)
+			},
+			CompleteConversationMultiAgentSet: func(action *feishu.CardAction, sessionKey, threadID, mode string) (*callback.CardActionTriggerResponse, error) {
+				return s.CompleteThreadMultiAgentSet(action, sessionKey, threadID, mode)
 			},
 			ReplyCommandActionResponse: s.app.ReplyCommandActionResponse,
 			CommandActionFromMessage:   CommandActionFromMessage,
@@ -470,10 +640,13 @@ func (s *Service) CommandThread(msg *feishu.InboundMessage, args []string) error
 
 // CommandSession handles the /session command with subcommands.
 func (s *Service) CommandSession(msg *feishu.InboundMessage, args []string) error {
+	msg, sessionKey := s.messageForThreadMenu(msg)
+	if msg == nil {
+		return nil
+	}
 	if len(args) == 0 {
 		return s.CommandThreads(msg, false)
 	}
-	sessionKey := appcore.MakeSessionKey(s.app, msg)
 	switch strings.TrimSpace(args[0]) {
 	case "list":
 		includeAll := false
@@ -545,16 +718,20 @@ func (s *Service) CommandSession(msg *feishu.InboundMessage, args []string) erro
 // CommandInterrupt handles /stop — interrupts the active turn.
 func (s *Service) CommandInterrupt(msg *feishu.InboundMessage) error {
 	sessionKey := appcore.MakeSessionKey(s.app, msg)
-	discarded := s.app.ThreadMenuPendingQueue().DiscardSessionPendingInputs(sessionKey)
-	sess := s.app.ThreadMenuAppState().Session(sessionKey)
-	if runtime := s.app.ThreadMenuBackendRuntime(); runtime != nil {
-		sess = runtime.ReconcileCompletedTurnFromFinalOutput(sessionKey, sess)
+	sessionKeys := s.interruptSurfaceSessionKeys(sessionKey)
+	discarded := s.discardInterruptSurfacePendingInputs(sessionKeys)
+	targetSessionKey, sess := s.interruptTargetSession(sessionKeys)
+	if runtime := s.app.ThreadMenuBackendRuntime(); runtime != nil && sess != nil {
+		sess = runtime.ReconcileCompletedTurnFromFinalOutput(targetSessionKey, sess)
 	}
 	if sess == nil {
-		sess = s.app.ThreadMenuAppState().Session(sessionKey)
+		targetSessionKey, sess = s.interruptTargetSession(sessionKeys)
 	}
-	canceledRetry := s.app.CancelAutoRetry(sessionKey, sess != nil && sess.ActiveTurnID != "" && sess.ActiveThreadID != "", "已停止当前 session 的自动重试。")
-	if sess == nil || sess.ActiveTurnID == "" || sess.ActiveThreadID == "" {
+	if !interruptSessionActive(sess) {
+		targetSessionKey, sess = s.interruptTargetSession(sessionKeys)
+	}
+	canceledRetry := s.cancelInterruptSurfaceAutoRetry(sessionKeys, targetSessionKey, sess)
+	if !interruptSessionActive(sess) {
 		if canceledRetry {
 			reply := "已停止当前 session 的自动重试。"
 			if discarded > 0 {
@@ -569,13 +746,13 @@ func (s *Service) CommandInterrupt(msg *feishu.InboundMessage) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	if err := s.app.ThreadMenuConversationBackend().InterruptActiveTurn(ctx, sessionKey, sess); err != nil {
+	if err := s.app.ThreadMenuConversationBackend().InterruptActiveTurn(ctx, targetSessionKey, sess); err != nil {
 		return err
 	}
 	// For backends with asynchronous interrupt responses (e.g. Claude), clear
 	// stale active operations so the session doesn't get stuck in "queuing".
 	if runtime := s.app.ThreadMenuBackendRuntime(); runtime != nil {
-		sess = runtime.ClearActiveOperationsAfterInterrupt(sessionKey, sess)
+		sess = runtime.ClearActiveOperationsAfterInterrupt(targetSessionKey, sess)
 	}
 	reply := "已请求中断当前任务。"
 	if discarded > 0 {
@@ -603,7 +780,11 @@ func (s *Service) CommandAppend(msg *feishu.InboundMessage, text string) error {
 
 // ShowThreadSandboxMenu shows the sandbox configuration menu.
 func (s *Service) ShowThreadSandboxMenu(msg *feishu.InboundMessage) error {
-	card, err := s.RenderThreadSandboxMenuCard(appcore.MakeSessionKey(s.app, msg))
+	msg, sessionKey := s.messageForThreadMenu(msg)
+	if msg == nil {
+		return nil
+	}
+	card, err := s.RenderThreadSandboxMenuCard(sessionKey)
 	if err != nil {
 		return err
 	}
@@ -613,6 +794,7 @@ func (s *Service) ShowThreadSandboxMenu(msg *feishu.InboundMessage) error {
 
 // RenderThreadSandboxMenuCard renders the sandbox configuration menu card.
 func (s *Service) RenderThreadSandboxMenuCard(sessionKey string) (map[string]any, error) {
+	sessionKey = s.effectiveSessionKey(sessionKey)
 	return appbackend.DriverForApp(s.app).Permission().RenderConversationSandboxMenu(sessionKey, appbackend.ConversationPermissionRenderDeps{
 		App:            s.app,
 		Session:        s.app.ThreadMenuAppState().Session,
@@ -623,7 +805,11 @@ func (s *Service) RenderThreadSandboxMenuCard(sessionKey string) (map[string]any
 
 // ShowThreadPolicyMenu shows the policy configuration menu.
 func (s *Service) ShowThreadPolicyMenu(msg *feishu.InboundMessage) error {
-	card, err := s.RenderThreadPolicyMenuCard(appcore.MakeSessionKey(s.app, msg))
+	msg, sessionKey := s.messageForThreadMenu(msg)
+	if msg == nil {
+		return nil
+	}
+	card, err := s.RenderThreadPolicyMenuCard(sessionKey)
 	if err != nil {
 		return err
 	}
@@ -633,7 +819,33 @@ func (s *Service) ShowThreadPolicyMenu(msg *feishu.InboundMessage) error {
 
 // RenderThreadPolicyMenuCard renders the policy configuration menu card.
 func (s *Service) RenderThreadPolicyMenuCard(sessionKey string) (map[string]any, error) {
+	sessionKey = s.effectiveSessionKey(sessionKey)
 	return appbackend.DriverForApp(s.app).Permission().RenderConversationPolicyMenu(sessionKey, appbackend.ConversationPermissionRenderDeps{
+		App:            s.app,
+		Session:        s.app.ThreadMenuAppState().Session,
+		FormatMenuBody: s.app.MenuCardBody,
+		CommandLabel:   s.app.CommandLabel,
+	})
+}
+
+// ShowThreadMultiAgentMenu shows the multi-agent mode configuration menu.
+func (s *Service) ShowThreadMultiAgentMenu(msg *feishu.InboundMessage) error {
+	msg, sessionKey := s.messageForThreadMenu(msg)
+	if msg == nil {
+		return nil
+	}
+	card, err := s.RenderThreadMultiAgentMenuCard(sessionKey)
+	if err != nil {
+		return err
+	}
+	_, err = s.app.Feishu().ReplyCard(context.Background(), msg.MessageID, card, appcore.ReplyInThreadEnabled(s.app, msg.ChatType))
+	return err
+}
+
+// RenderThreadMultiAgentMenuCard renders the multi-agent mode configuration menu card.
+func (s *Service) RenderThreadMultiAgentMenuCard(sessionKey string) (map[string]any, error) {
+	sessionKey = s.effectiveSessionKey(sessionKey)
+	return appbackend.DriverForApp(s.app).Permission().RenderConversationMultiAgentMenu(sessionKey, appbackend.ConversationPermissionRenderDeps{
 		App:            s.app,
 		Session:        s.app.ThreadMenuAppState().Session,
 		FormatMenuBody: s.app.MenuCardBody,
@@ -647,6 +859,7 @@ func (s *Service) RenderThreadPolicyMenuCard(sessionKey string) (map[string]any,
 
 // CompleteMenuThread handles the "menu.thread" card action.
 func (s *Service) CompleteMenuThread(action *feishu.CardAction, sessionKey string) (*callback.CardActionTriggerResponse, error) {
+	sessionKey = s.effectiveSessionKey(sessionKey)
 	slash := primaryConversationSlash(appcore.ConfiguredBackend(s.app))
 	if strings.TrimSpace(slash) == "" {
 		return &callback.CardActionTriggerResponse{
@@ -658,6 +871,7 @@ func (s *Service) CompleteMenuThread(action *feishu.CardAction, sessionKey strin
 
 // CompleteMenuNew handles the "menu.thread.new" card action.
 func (s *Service) CompleteMenuNew(action *feishu.CardAction, sessionKey string) (*callback.CardActionTriggerResponse, error) {
+	sessionKey = s.effectiveSessionKey(sessionKey)
 	slash := primaryConversationSlash(appcore.ConfiguredBackend(s.app))
 	if strings.TrimSpace(slash) == "" {
 		return &callback.CardActionTriggerResponse{
@@ -684,21 +898,31 @@ func (s *Service) CompleteMenuInterrupt(action *feishu.CardAction, sessionKey, t
 
 // CompleteThreadSandboxMenu handles the "thread.sandbox.menu" card action.
 func (s *Service) CompleteThreadSandboxMenu(action *feishu.CardAction, sessionKey string) (*callback.CardActionTriggerResponse, error) {
+	sessionKey = s.effectiveSessionKey(sessionKey)
 	return s.app.CompleteMenuCommand(action, sessionKey, "/thread sandbox", "menu.thread")
 }
 
 // CompleteThreadPolicyMenu handles the "thread.policy.menu" card action.
 func (s *Service) CompleteThreadPolicyMenu(action *feishu.CardAction, sessionKey string) (*callback.CardActionTriggerResponse, error) {
+	sessionKey = s.effectiveSessionKey(sessionKey)
 	return s.app.CompleteMenuCommand(action, sessionKey, "/thread policy", "menu.thread")
+}
+
+// CompleteThreadMultiAgentMenu handles the "thread.multiagent.menu" card action.
+func (s *Service) CompleteThreadMultiAgentMenu(action *feishu.CardAction, sessionKey string) (*callback.CardActionTriggerResponse, error) {
+	sessionKey = s.effectiveSessionKey(sessionKey)
+	return s.app.CompleteMenuCommand(action, sessionKey, "/thread multiagent", "menu.thread")
 }
 
 // CompleteClaudeSessionPermissionMenu handles the session permission menu card action.
 func (s *Service) CompleteClaudeSessionPermissionMenu(action *feishu.CardAction, sessionKey string) (*callback.CardActionTriggerResponse, error) {
+	sessionKey = s.effectiveSessionKey(sessionKey)
 	return s.app.CompleteMenuCommand(action, sessionKey, "/session permissions", "menu.thread")
 }
 
 // CompleteThreadSandboxSet handles the "thread.sandbox.set" card action.
 func (s *Service) CompleteThreadSandboxSet(action *feishu.CardAction, sessionKey, threadID, sandboxMode string) (*callback.CardActionTriggerResponse, error) {
+	sessionKey = s.effectiveSessionKey(sessionKey)
 	return appbackend.DriverForApp(s.app).Permission().CompleteConversationSandboxSet(sessionKey, threadID, sandboxMode, appbackend.ConversationPermissionUpdateDeps{
 		Session:     s.app.ThreadMenuAppState().Session,
 		SaveSession: s.app.ThreadMenuAppState().SaveSession,
@@ -713,6 +937,7 @@ func (s *Service) CompleteThreadSandboxSet(action *feishu.CardAction, sessionKey
 
 // CompleteThreadPolicySet handles the "thread.policy.set" card action.
 func (s *Service) CompleteThreadPolicySet(action *feishu.CardAction, sessionKey, threadID, approvalPolicy string) (*callback.CardActionTriggerResponse, error) {
+	sessionKey = s.effectiveSessionKey(sessionKey)
 	return appbackend.DriverForApp(s.app).Permission().CompleteConversationPolicySet(sessionKey, threadID, approvalPolicy, appbackend.ConversationPermissionUpdateDeps{
 		Session:     s.app.ThreadMenuAppState().Session,
 		SaveSession: s.app.ThreadMenuAppState().SaveSession,
@@ -725,8 +950,27 @@ func (s *Service) CompleteThreadPolicySet(action *feishu.CardAction, sessionKey,
 	})
 }
 
+// CompleteThreadMultiAgentSet handles the "thread.multiagent.set" card action.
+func (s *Service) CompleteThreadMultiAgentSet(action *feishu.CardAction, sessionKey, threadID, mode string) (*callback.CardActionTriggerResponse, error) {
+	sessionKey = s.effectiveSessionKey(sessionKey)
+	return appbackend.DriverForApp(s.app).Permission().CompleteConversationMultiAgentSet(sessionKey, threadID, mode, appbackend.ConversationPermissionUpdateDeps{
+		Session:     s.app.ThreadMenuAppState().Session,
+		SaveSession: s.app.ThreadMenuAppState().SaveSession,
+		RenderSandboxMenu: func(sessionKey string) (map[string]any, error) {
+			return s.RenderThreadSandboxMenuCard(sessionKey)
+		},
+		RenderPolicyMenu: func(sessionKey string) (map[string]any, error) {
+			return s.RenderThreadPolicyMenuCard(sessionKey)
+		},
+		RenderMultiAgentMenu: func(sessionKey string) (map[string]any, error) {
+			return s.RenderThreadMultiAgentMenuCard(sessionKey)
+		},
+	})
+}
+
 // CompleteThreadResume handles resuming a previously created thread.
 func (s *Service) CompleteThreadResume(action *feishu.CardAction, sessionKey, threadID string) (*callback.CardActionTriggerResponse, error) {
+	sessionKey = s.effectiveSessionKey(sessionKey)
 	appState := s.app.ThreadMenuAppState()
 	sess := appState.Session(sessionKey)
 	if sess == nil {
@@ -784,6 +1028,7 @@ func (s *Service) CompleteThreadResume(action *feishu.CardAction, sessionKey, th
 
 // CompleteClaudeSessionPermissionModeSet handles setting the Claude session permission mode.
 func (s *Service) CompleteClaudeSessionPermissionModeSet(action *feishu.CardAction, sessionKey, threadID, rawMode string) (*callback.CardActionTriggerResponse, error) {
+	sessionKey = s.effectiveSessionKey(sessionKey)
 	return appbackend.DriverForApp(s.app).Permission().CompleteConversationPermissionModeSet(sessionKey, threadID, rawMode, appbackend.ConversationPermissionModeUpdateDeps{
 		App:         s.app,
 		Session:     s.app.ThreadMenuAppState().Session,

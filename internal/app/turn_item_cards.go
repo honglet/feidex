@@ -9,12 +9,8 @@ import (
 	"feidex/internal/state"
 )
 
-func replyInThreadForSubmission(a *App, sub *state.Submission) bool {
-	if sub == nil {
-		return false
-	}
-	sess := a.State().Session(sub.SessionKey)
-	return sess != nil && sess.ChatType == "group" && replyInThreadEnabled(a, sess.ChatType)
+func replyInThreadForSubmission(_ *App, _ *state.Submission) bool {
+	return false
 }
 
 func sendSubmissionQueuedNotice(a *App, ctx context.Context, sub *state.Submission) {
@@ -47,6 +43,9 @@ func (s outboundCardService) sendTurnItemCardWithReuse(ctx context.Context, sub 
 	}
 	if quietModeEnabled(feishuConfig(s.app)) && !shouldDeliverTurnItemPayloadInQuiet(quietMode(feishuConfig(s.app)), payload) {
 		return ""
+	}
+	if payload.ItemType == "user_input" && payload.UserInput != nil {
+		return sendAsyncUserInputCard(s.app, sub, *payload.UserInput, reuseMessageID)
 	}
 	kind := turnItemEventKind(payload.ItemType)
 	footerLines := []string(nil)

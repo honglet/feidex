@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"feidex/internal/app/pendingforms"
 	"feidex/internal/pathdisplay"
 )
 
@@ -42,7 +43,34 @@ func BuildTurnItemCardPayload(itemID string, item map[string]any, workspaceCwd s
 	case "agent_message":
 		text := FirstNonEmpty(ExtractTurnItemText(item, "content", "output_text"), StringValue(item["text"]))
 		payload.SummaryText = strings.TrimSpace(text)
-		payload.IsFinalAnswer = strings.TrimSpace(StringValue(item["phase"])) == "final_answer"
+		payload.MessagePhase = strings.TrimSpace(StringValue(item["phase"]))
+		payload.IsFinalAnswer = payload.MessagePhase == "final_answer"
+		// Async questions are delivered as agentMessage(final_answer), but do
+		// not finish the turn and must never become a final-card candidate.
+		if StringValue(item["delivery"]) == "async" {
+			payload.IsFinalAnswer = false
+			payload.ItemType = "user_input"
+			input := &pendingforms.ToolUserInputPayload{ItemID: itemID}
+			for i, raw := range ToolInputSequence(item["questions"]) {
+				question := ToolInputMap(raw)
+				title := strings.TrimSpace(StringValue(question["title"]))
+				if title == "" {
+					continue
+				}
+				q := pendingforms.ToolUserInputQuestion{ID: fmt.Sprintf("q%d", i+1), Question: title}
+				for _, option := range ToolInputSequence(question["options"]) {
+					if label := strings.TrimSpace(StringValue(option)); label != "" {
+						q.Options = append(q.Options, pendingforms.ToolUserInputOption{Label: label})
+					}
+				}
+				q.IsOther = len(q.Options) > 0
+				input.Questions = append(input.Questions, q)
+			}
+			if len(input.Questions) > 0 {
+				payload.UserInput = input
+				payload.SummaryText = pendingforms.RenderToolUserInputBody(*input)
+			}
+		}
 	case "entered_review_mode":
 		payload.SummaryText = "已进入 review 模式。"
 	case "exited_review_mode":

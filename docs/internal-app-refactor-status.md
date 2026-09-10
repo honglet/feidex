@@ -1,6 +1,6 @@
 # `internal/app` 重构现状
 
-更新时间: 2026-04-29
+更新时间: 2026-07-10
 
 相关约束文档:
 
@@ -15,19 +15,21 @@
 
 `internal/app` 的阶段化重构已经完成。旧的 phase / wave 执行计划不再作为当前工作的 source of truth；现在以边界文档、状态机审计和 root 现状审计为准。
 
-截至 2026-04-29:
+截至 2026-07-10:
 
-- root `internal/app` 保留 `143` 个生产文件，共 `13,111` 行。
-- root `internal/app` 保留 `84` 个测试文件。
-- `internal/app` 目录下已有 `59` 个直接子包。
+- root `internal/app` 保留 `146` 个生产文件，共 `14,246` 行。
+- root `internal/app` 保留 `89` 个测试文件，共 `27,538` 行。
+- `internal/app` 目录下已有 `62` 个直接子包。
 
 这说明重构已经从“执行计划阶段”进入“稳定边界阶段”。后续工作只做增量收敛，不再继续维护旧的阶段编号文档。
+
+thread goal、MCP send bridge、Codex plan-mode exit 和 Plan 模式配置已经从 root 拆到 owner package；root 只保留绑定、入口路由和 frontend-scoped lifecycle hook。
 
 ## 已稳定下来的结构
 
 - `appstate` 已成为 app 层访问持久化状态的 owner；不再回到 `appStateFacade` 式的万能代理。
 - backend 差异主要收敛在 `backend`、`backendcaps`、`convbackend`、`clauderuntime`、`claudesession`、`claudesupport`、`codexruntime` 等边界内。
-- owner-local 纯逻辑和纯渲染继续下沉到 `delivery`、`pathpick`、`review`、`turnitem`、`features`、`serverrequest`、`submission`、`workspacecmd`、`reviewcmd`、`upgradecmd` 等子包。
+- owner-local 纯逻辑和纯渲染继续下沉到 `delivery`、`pathpick`、`review`、`turnitem`、`features`、`serverrequest`、`submission`、`workspacecmd`、`reviewcmd`、`upgradecmd`、`goalcmd`、`mcpbridge`、`planmode` 等子包。
 - root `internal/app` 现在主要保留组合根、Feishu 入口、frontend-scoped lifecycle、以及必须对照 Codex app-server 审计的协议敏感编排。
 
 ## 当前 root `internal/app` 允许保留的内容
@@ -51,6 +53,7 @@
 - workspace / path-picker glue
 - upgrade / review / history / debug bindings
 - backend runtime / recovery / maintenance glue
+- goal / MCP / plan-mode 的 root bindings 继续保持薄委托，不吸收 owner-local helper
 - 大型 binding 文件，例如 `submission_bindings.go`、`serverrequest_bindings.go`、`convbackend_bindings.go`
 
 当这些区域发生真实需求改动时，优先顺手把 owner-local 逻辑继续压回对应子包；不要为了维持旧计划而额外保留“下一轮”文档。

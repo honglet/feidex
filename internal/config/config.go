@@ -31,18 +31,18 @@ type LogConfig struct {
 }
 
 type FeishuConfig struct {
-	Platform            string    `toml:"platform"`
-	Backend             string    `toml:"backend"`
-	AutoRetry           bool      `toml:"codex_auto_retry"`
-	AppID               string    `toml:"app_id"`
-	AppSecret           string    `toml:"app_secret"`
-	AllowFrom           []string  `toml:"allow_from"`
-	DebugAllowFrom      []string  `toml:"debug_allow_from"`
-	GroupAtOnly         bool      `toml:"group_at_only"`
-	RespondToAtEveryone bool      `toml:"respond_to_at_everyone"`
-	CardEnabled         bool      `toml:"card_enabled"`
-	ReplyInThread       bool      `toml:"reply_in_thread"`
-	Quiet               QuietMode `toml:"quiet"`
+	Backend   string `toml:"backend"`
+	AutoRetry bool   `toml:"codex_auto_retry"`
+	AppID     string `toml:"app_id"`
+	AppSecret string `toml:"app_secret"`
+	Domain    string `toml:"domain"`
+	// Platform is retained as a compatibility alias for older local configs.
+	// Domain is canonical for new configuration.
+	Platform       string    `toml:"platform"`
+	AllowFrom      []string  `toml:"allow_from"`
+	DebugAllowFrom []string  `toml:"debug_allow_from"`
+	CardEnabled    bool      `toml:"card_enabled"`
+	Quiet          QuietMode `toml:"quiet"`
 }
 
 type FrontendConfig struct {
@@ -102,7 +102,7 @@ func CodexProfilePath(home, profile string) (string, error) {
 	return filepath.Join(home, profile+".config.toml"), nil
 }
 
-// LoadCodexProfile loads the model-related settings from a Codex profile.
+// LoadCodexProfile loads model-related settings from a Codex profile.
 // Unknown profile keys remain the responsibility of Codex CLI itself.
 func LoadCodexProfile(home, profile string) (CodexConfig, error) {
 	path, err := CodexProfilePath(home, profile)
@@ -132,8 +132,8 @@ func (p codexProfileConfig) codexConfig() CodexConfig {
 	}
 }
 
-// UpdateCodexProfile updates the model-related settings in a Codex profile
-// while preserving unrelated profile keys.
+// UpdateCodexProfile updates model-related settings while preserving unrelated
+// profile keys such as feature flags and custom provider configuration.
 func UpdateCodexProfile(home, profile string, mutate func(*CodexConfig)) error {
 	path, err := CodexProfilePath(home, profile)
 	if err != nil {
@@ -175,14 +175,15 @@ func UpdateCodexProfile(home, profile string, mutate func(*CodexConfig)) error {
 }
 
 type ClaudeConfig struct {
-	Command                    string `toml:"command"`
-	Model                      string `toml:"model"`
-	Effort                     string `toml:"effort"`
-	PermissionMode             string `toml:"permission_mode"`
-	DangerouslySkipPermissions bool   `toml:"dangerously_skip_permissions"`
-	DisablePlugins             bool   `toml:"disable_plugins"`
-	SystemPrompt               string `toml:"system_prompt"`
-	PermissionPromptToolStdio  bool   `toml:"permission_prompt_tool_stdio"`
+	Command                    string   `toml:"command"`
+	Model                      string   `toml:"model"`
+	ModelOptions               []string `toml:"model_options"`
+	Effort                     string   `toml:"effort"`
+	PermissionMode             string   `toml:"permission_mode"`
+	DangerouslySkipPermissions bool     `toml:"dangerously_skip_permissions"`
+	DisablePlugins             bool     `toml:"disable_plugins"`
+	SystemPrompt               string   `toml:"system_prompt"`
+	PermissionPromptToolStdio  bool     `toml:"permission_prompt_tool_stdio"`
 }
 
 type DaemonConfig struct {
@@ -193,9 +194,9 @@ type Workspace struct {
 	ID                   string `toml:"id"`
 	Name                 string `toml:"name"`
 	Cwd                  string `toml:"cwd"`
-	Model                string `toml:"model"`
 	ApprovalPolicy       string `toml:"approval_policy"`
 	SandboxMode          string `toml:"sandbox_mode"`
+	MultiAgentMode       string `toml:"multi_agent_mode"`
 	ClaudePermissionMode string `toml:"claude_permission_mode"`
 }
 
@@ -203,11 +204,32 @@ const (
 	RuntimeBackendCodex  = "codex"
 	RuntimeBackendClaude = "claude"
 	DefaultFrontendID    = "default"
-	FeishuPlatform       = "feishu"
-	LarkPlatform         = "lark"
-	FeishuOpenBaseURL    = "https://open.feishu.cn"
-	LarkOpenBaseURL      = "https://open.larksuite.com"
 )
+
+// Feishu/Lark Open Platform domains. The Go SDK is shared between the two
+// products; only the Open Platform base URL differs.
+const (
+	FeishuDomainFeishu = "feishu"
+	FeishuDomainLark   = "lark"
+	FeishuPlatform     = FeishuDomainFeishu
+	LarkPlatform       = FeishuDomainLark
+
+	feishuOpenBaseURL = "https://open.feishu.cn"
+	larkOpenBaseURL   = "https://open.larksuite.com"
+)
+
+// OpenBaseURL returns the Open Platform base URL for the configured domain.
+// Defaults to Feishu (open.feishu.cn) when domain is unset.
+func (c FeishuConfig) OpenBaseURL() string {
+	domain := c.Domain
+	if strings.TrimSpace(domain) == "" {
+		domain = c.Platform
+	}
+	if strings.EqualFold(strings.TrimSpace(domain), FeishuDomainLark) {
+		return larkOpenBaseURL
+	}
+	return feishuOpenBaseURL
+}
 
 func Default() *Config {
 	return &Config{
@@ -237,9 +259,9 @@ func Default() *Config {
 				ID:                   "default",
 				Name:                 "Default",
 				Cwd:                  ".",
-				Model:                "",
 				ApprovalPolicy:       "on-request",
 				SandboxMode:          "workspace-write",
+				MultiAgentMode:       "explicitRequestOnly",
 				ClaudePermissionMode: "",
 			},
 		},
@@ -291,6 +313,7 @@ func (c *Config) Normalize(baseDir string) error {
 	if c.Claude.Model == "" {
 		c.Claude.Model = "sonnet"
 	}
+	c.Claude.ModelOptions = normalizeStringList(c.Claude.ModelOptions)
 	claudeEffort, err := NormalizeClaudeEffort(c.Claude.Effort)
 	if err != nil {
 		return err
@@ -375,6 +398,9 @@ func (c *Config) Normalize(baseDir string) error {
 		if ws.SandboxMode == "" {
 			ws.SandboxMode = "workspace-write"
 		}
+		if ws.MultiAgentMode == "" {
+			ws.MultiAgentMode = "explicitRequestOnly"
+		}
 		ws.ClaudePermissionMode = normalizeOptionalClaudePermissionMode(ws.ClaudePermissionMode)
 		if ws.ClaudePermissionMode != "" && !isSupportedClaudePermissionMode(ws.ClaudePermissionMode) {
 			return fmt.Errorf("workspace %q has unsupported claude_permission_mode %q", ws.ID, ws.ClaudePermissionMode)
@@ -395,11 +421,8 @@ func (c *Config) Normalize(baseDir string) error {
 
 func defaultFeishuConfig() FeishuConfig {
 	return FeishuConfig{
-		Platform:      FeishuPlatform,
-		GroupAtOnly:   true,
-		CardEnabled:   true,
-		ReplyInThread: true,
-		Quiet:         QuietModeProgress,
+		CardEnabled: true,
+		Quiet:       QuietModeProgress,
 	}
 }
 
@@ -407,21 +430,22 @@ func normalizeFeishuConfig(cfg *FeishuConfig) error {
 	if cfg == nil {
 		return nil
 	}
-	cfg.Platform = strings.ToLower(strings.TrimSpace(cfg.Platform))
-	if cfg.Platform == "" {
-		cfg.Platform = FeishuPlatform
-	}
-	switch cfg.Platform {
-	case FeishuPlatform, LarkPlatform:
-	default:
-		return fmt.Errorf("unsupported feishu.platform %q; must be %q or %q", cfg.Platform, FeishuPlatform, LarkPlatform)
-	}
 	cfg.Backend = normalizeBackendName(cfg.Backend)
 	switch cfg.Backend {
 	case "", RuntimeBackendCodex, RuntimeBackendClaude:
 	default:
 		return fmt.Errorf("unsupported feishu.backend %q; must be unset, %q, or %q", cfg.Backend, RuntimeBackendCodex, RuntimeBackendClaude)
 	}
+	domainValue := cfg.Domain
+	if strings.TrimSpace(domainValue) == "" {
+		domainValue = cfg.Platform
+	}
+	domain, err := normalizeFeishuDomain(domainValue)
+	if err != nil {
+		return err
+	}
+	cfg.Domain = domain
+	cfg.Platform = domain
 	quietMode, err := ParseQuietMode(cfg.Quiet)
 	if err != nil {
 		quietMode = QuietModeNormal
@@ -430,17 +454,17 @@ func normalizeFeishuConfig(cfg *FeishuConfig) error {
 	return nil
 }
 
-func FeishuOpenBaseURLForPlatform(platform string) string {
-	switch strings.ToLower(strings.TrimSpace(platform)) {
-	case LarkPlatform:
-		return LarkOpenBaseURL
+// normalizeFeishuDomain canonicalizes a domain value to FeishuDomainFeishu or
+// FeishuDomainLark. An empty value defaults to Feishu.
+func normalizeFeishuDomain(domain string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(domain)) {
+	case "", FeishuDomainFeishu:
+		return FeishuDomainFeishu, nil
+	case FeishuDomainLark:
+		return FeishuDomainLark, nil
 	default:
-		return FeishuOpenBaseURL
+		return "", fmt.Errorf("unsupported feishu.domain %q; must be unset, %q, or %q", domain, FeishuDomainFeishu, FeishuDomainLark)
 	}
-}
-
-func FeishuOpenBaseURLForConfig(cfg FeishuConfig) string {
-	return FeishuOpenBaseURLForPlatform(cfg.Platform)
 }
 
 func firstNonEmptyString(values ...string) string {
@@ -530,6 +554,23 @@ func Save(path string, cfg *Config) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+func normalizeStringList(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func FindWorkspace(cfg *Config, id string) *Workspace {

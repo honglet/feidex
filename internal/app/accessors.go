@@ -109,6 +109,50 @@ func (a *App) State() *appstate.Store {
 	return appstate.New(a)
 }
 
+// BotProfileWorkspaceID returns the p2p BotProfile workspace, if configured.
+// It is an optional appcore capability used by shared workspace resolution.
+func (a *App) BotProfileWorkspaceID() string {
+	if a == nil || a.State() == nil {
+		return ""
+	}
+	if profile := a.State().BotProfile(); profile != nil {
+		return strings.TrimSpace(profile.WorkspaceID)
+	}
+	return ""
+}
+
+// BotProfile returns the current frontend's persisted default profile.
+func (a *App) BotProfile() *state.BotProfile {
+	if a == nil || a.State() == nil {
+		return nil
+	}
+	return a.State().BotProfile()
+}
+
+// SetBotProfileWorkspaceID updates the p2p BotProfile workspace. Group
+// workspace selection is intentionally handled by ConversationBinding.
+func (a *App) SetBotProfileWorkspaceID(workspaceID string) error {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if a == nil || workspaceID == "" {
+		return nil
+	}
+	_, err := updateBotProfile(a, func(profile *state.BotProfile) { profile.WorkspaceID = workspaceID })
+	return err
+}
+
+// AgentBindingsForChat returns local binding configuration for one logical
+// chat. It is an optional appcore capability used by binding-aware helpers.
+func (a *App) AgentBindingsForChat(chatType, chatID string) []*state.AgentBinding {
+	if a == nil {
+		return nil
+	}
+	st := a.State()
+	if st == nil {
+		return nil
+	}
+	return st.AgentBindingsForChat(chatType, chatID)
+}
+
 // ConfigPath returns the filesystem path to the configuration file.
 func (a *App) ConfigPath() string {
 	if a == nil {

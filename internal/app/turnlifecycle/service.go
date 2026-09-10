@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"feidex/internal/app/appcore"
 	"feidex/internal/app/apputil"
 	"feidex/internal/app/sessionctx"
 	"feidex/internal/app/submission"
@@ -44,14 +45,22 @@ type App interface {
 	RunAsync(fn func())
 	TurnStopAttentionUserID(sub *state.Submission, turnID string) string
 	SendEmptyFinalCardWithReuse(ctx context.Context, sub *state.Submission, footerLines []string, reuseMessageID string) string
+	SendFinalMessagesWithReuse(ctx context.Context, sub *state.Submission, text string, footerLines []string, reuseMessageID string) []string
 	SessionHasActiveWork(sess *state.Session) bool
-	SessionShouldStartNextSubmissionAsync(sess *state.Session) bool
+	NextQueuedSubmissionSessionKey(sessionKey string) string
 	BindStandaloneCompactTurn(threadID, turnID string) bool
 	BindGoalContinuationTurn(threadID, turnID string) bool
 	FinishStandaloneCompactTurn(threadID, turnID, status string) bool
 	FindSubmissionByTurn(threadID, turnID string) (string, *state.Submission)
 	ProcessCodexPlanModeExitOnTurnCompleted(sessionKey string, sub *state.Submission, threadID, turnID, status string, flush TurnStreamFlushResult) bool
 	LogSessionState(event, sessionKey string, sess *state.Session)
+}
+
+func recordLegacySessionRootTurnBinding(reply ReplyContinuationProvider, sess *state.Session, sub *state.Submission, sessionKey, threadID, turnID string) {
+	if reply == nil || sess == nil || appcore.SubmissionHasSourceRootMessages(sub) {
+		return
+	}
+	reply.RecordRootTurnBinding(sess.RootMessageID, sessionKey, threadID, turnID)
 }
 
 // ---------------------------------------------------------------------------
@@ -186,10 +195,6 @@ func sessionHasActiveWork(sess *state.Session) bool {
 	}
 }
 
-func sessionShouldStartNextSubmissionAsync(sess *state.Session) bool {
-	return submission.ShouldStartNextSubmissionAsync(sess)
-}
-
 // TurnCompletionTerminalText returns the terminal text to display when a turn
 // completes. Returns "" for successful completions. This is a pure function.
 func TurnCompletionTerminalText(status, lastError string) string {
@@ -240,7 +245,7 @@ func (w Service) BindPendingSubmissionTurn(threadID, turnID string, allowReview 
 	sub.TurnID = turnID
 	sub.Status = state.SubmissionStatusRunning.String()
 	w.replyContinuation().RecordSubmissionSourceLinks(sub)
-	w.replyContinuation().RecordRootTurnBinding(sess.RootMessageID, sessionKey, threadID, turnID)
+	recordLegacySessionRootTurnBinding(w.replyContinuation(), sess, sub, sessionKey, threadID, turnID)
 	w.turnStream().NoteTurnStarted(sessionKey, sub)
 	w.app.MarkSessionThreadLive(sessionKey, threadID)
 	return true
@@ -335,7 +340,7 @@ func (w Service) OnTurnStartedNotification(threadID, turnID string) {
 	w.runtimeState().MarkTurnStartedAt(turnID, time.Now())
 	w.runtimeState().ClearPendingTurnBindingForSubmission(threadID, sub.ID)
 	w.replyContinuation().RecordSubmissionSourceLinks(sub)
-	w.replyContinuation().RecordRootTurnBinding(sess.RootMessageID, sessionKey, threadID, turnID)
+	recordLegacySessionRootTurnBinding(w.replyContinuation(), sess, sub, sessionKey, threadID, turnID)
 	w.turnStream().NoteTurnStarted(sessionKey, sub)
 	w.app.MarkSessionThreadLive(sessionKey, threadID)
 	slog.Debug("turn started notification rebound pending submission",
@@ -414,7 +419,7 @@ func (w Service) BindPendingSubmissionForTurnCompletion(threadID, turnID string)
 		return "", nil
 	}
 	w.replyContinuation().RecordSubmissionSourceLinks(sub)
-	w.replyContinuation().RecordRootTurnBinding(sess.RootMessageID, sessionKey, threadID, turnID)
+	recordLegacySessionRootTurnBinding(w.replyContinuation(), sess, sub, sessionKey, threadID, turnID)
 	w.turnStream().NoteTurnStarted(sessionKey, sub)
 	w.app.MarkSessionThreadLive(sessionKey, threadID)
 	slog.Debug("turn completed rebound pending submission without prior turn start notification",
@@ -593,6 +598,13 @@ func (w Service) FinishTurn(threadID, turnID, status string) {
 				"",
 				firstNonEmpty(strings.TrimSpace(flush.PlanMessageID), reuseMessageID),
 			)
+		} else if strings.TrimSpace(flush.FinalText) != "" {
+			w.app.SendFinalMessagesWithReuse(
+				context.Background(), sub,
+				strings.TrimSpace(flush.FinalText),
+				w.runtimeState().TurnFinalFooterLines(turnID, time.Now()),
+				strings.TrimSpace(flush.FinalReuseMessageID),
+			)
 		} else {
 			w.app.SendEmptyFinalCardWithReuse(
 				context.Background(), sub,
@@ -601,13 +613,18 @@ func (w Service) FinishTurn(threadID, turnID, status string) {
 			)
 		}
 	}
-	if updatedSess != nil && sessionShouldStartNextSubmissionAsync(updatedSess) {
+	nextSessionKey := ""
+	if updatedSess != nil {
+		nextSessionKey = strings.TrimSpace(w.app.NextQueuedSubmissionSessionKey(sessionKey))
+	}
+	if nextSessionKey != "" {
 		slog.Debug("finishTurn scheduling next submission asynchronously",
-			"session_key", sessionKey,
+			"session_key", nextSessionKey,
+			"source_session_key", sessionKey,
 			"thread_id", updatedSess.ActiveThreadID,
 		)
 		w.app.RunAsync(func() {
-			w.submissionDispatch().StartNextSubmissionAsync(sessionKey, "finishTurn")
+			w.submissionDispatch().StartNextSubmissionAsync(nextSessionKey, "finishTurn")
 		})
 	}
 	w.runtimeMaintenance().CleanupSubmissionRuntimeState(sub)

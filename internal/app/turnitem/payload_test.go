@@ -37,15 +37,23 @@ func TestBuildTurnItemCardPayload(t *testing.T) {
 		"content": []any{
 			map[string]any{"type": "output_text", "text": "final text"},
 		},
-	}, ""); !ok || got.ItemType != "agent_message" || got.SummaryText != "final text" || got.IsFinalAnswer {
+	}, ""); !ok || got.ItemType != "agent_message" || got.SummaryText != "final text" || got.IsFinalAnswer || got.MessagePhase != "" {
 		t.Fatalf("BuildTurnItemCardPayload(agent message) = %#v / %v", got, ok)
+	}
+
+	if got, ok := BuildTurnItemCardPayload("item-commentary", map[string]any{
+		"type":  "agent_message",
+		"text":  "working note",
+		"phase": "commentary",
+	}, ""); !ok || got.IsFinalAnswer || got.SummaryText != "working note" || got.MessagePhase != "commentary" {
+		t.Fatalf("BuildTurnItemCardPayload(commentary agent message) = %#v / %v", got, ok)
 	}
 
 	if got, ok := BuildTurnItemCardPayload("item-final", map[string]any{
 		"type":  "agent_message",
 		"text":  "final text",
 		"phase": "final_answer",
-	}, ""); !ok || !got.IsFinalAnswer || got.SummaryText != "final text" {
+	}, ""); !ok || !got.IsFinalAnswer || got.SummaryText != "final text" || got.MessagePhase != "final_answer" {
 		t.Fatalf("BuildTurnItemCardPayload(final answer) = %#v / %v", got, ok)
 	}
 
@@ -150,6 +158,34 @@ func TestBuildTurnItemCardPayload(t *testing.T) {
 		"status": "completed",
 	}, ""); !ok || !strings.Contains(got.SummaryText, "文件改动:") || !strings.Contains(got.DetailText, `"type": "file_change"`) {
 		t.Fatalf("BuildTurnItemCardPayload(file empty) = %#v / %v", got, ok)
+	}
+}
+
+func TestAsyncAgentMessageIsUserInputDespiteFinalPhase(t *testing.T) {
+	for _, phase := range []string{"final_answer", "commentary", ""} {
+		t.Run(phase, func(t *testing.T) {
+			payload, ok := BuildTurnItemCardPayload("question-1", map[string]any{
+				"type": "agentMessage", "phase": phase, "delivery": "async", "text": "",
+				"questions": []any{
+					map[string]any{"title": "Choose a behavior", "options": []any{"First", "Second"}},
+					map[string]any{"title": "Provide details", "options": nil},
+				},
+			}, "")
+			if !ok || payload.ItemType != "user_input" || payload.IsFinalAnswer || payload.UserInput == nil || len(payload.UserInput.Questions) != 2 {
+				t.Fatalf("async item = %+v, %t", payload, ok)
+			}
+			questions := payload.UserInput.Questions
+			if !questions[0].IsOther || len(questions[0].Options) != 2 || questions[0].Options[0].Label != "First" || questions[1].IsOther || len(questions[1].Options) != 0 {
+				t.Fatalf("async questions lost options/free text: %+v", questions)
+			}
+		})
+	}
+	// An async text-only item must not be consolidated into final output either.
+	payload, ok := BuildTurnItemCardPayload("async-text", map[string]any{
+		"type": "agentMessage", "phase": "final_answer", "delivery": "async", "text": "A question without structured choices",
+	}, "")
+	if !ok || payload.IsFinalAnswer || payload.ItemType != "user_input" || payload.UserInput != nil {
+		t.Fatalf("async text fallback = %+v, %t", payload, ok)
 	}
 }
 

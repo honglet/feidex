@@ -44,6 +44,22 @@ func (c *CommandCaptureClient) SetHandlers(onMessage func(*feishu.InboundMessage
 	c.Base.SetHandlers(onMessage, onCardAction, onBotMenu, onRecall, onReaction)
 }
 
+func (c *CommandCaptureClient) SetGroupMessagePolicy(policy feishu.GroupMessagePolicy) {
+	if configurable, ok := c.Base.(interface {
+		SetGroupMessagePolicy(feishu.GroupMessagePolicy)
+	}); ok {
+		configurable.SetGroupMessagePolicy(policy)
+	}
+}
+
+func (c *CommandCaptureClient) SetBotGroupAddedHandler(handler func(*feishu.BotGroupEvent)) {
+	if configurable, ok := c.Base.(interface {
+		SetBotGroupAddedHandler(func(*feishu.BotGroupEvent))
+	}); ok {
+		configurable.SetBotGroupAddedHandler(handler)
+	}
+}
+
 func (c *CommandCaptureClient) Start(ctx context.Context) error {
 	return c.Base.Start(ctx)
 }
@@ -144,6 +160,34 @@ func (c *CommandCaptureClient) LookupMessageSenderOpenID(ctx context.Context, me
 	return c.Base.LookupMessageSenderOpenID(ctx, messageID)
 }
 
+func (c *CommandCaptureClient) GetGroupBotCount(ctx context.Context, chatID string) (int, error) {
+	return c.Base.GetGroupBotCount(ctx, chatID)
+}
+
+func (c *CommandCaptureClient) ListAnnouncementBlocks(ctx context.Context, chatID string) ([]feishu.AnnouncementBlock, error) {
+	return c.Base.ListAnnouncementBlocks(ctx, chatID)
+}
+
+func (c *CommandCaptureClient) CreateAnnouncementTextBlock(ctx context.Context, chatID, parentBlockID, content, clientToken string) (feishu.AnnouncementBlock, error) {
+	return c.Base.CreateAnnouncementTextBlock(ctx, chatID, parentBlockID, content, clientToken)
+}
+
+func (c *CommandCaptureClient) CreateAnnouncementTextBlockAt(ctx context.Context, chatID, parentBlockID, content, clientToken string, index int) (feishu.AnnouncementBlock, error) {
+	return c.Base.CreateAnnouncementTextBlockAt(ctx, chatID, parentBlockID, content, clientToken, index)
+}
+
+func (c *CommandCaptureClient) UpdateAnnouncementTextBlock(ctx context.Context, chatID, blockID, content, clientToken string) error {
+	return c.Base.UpdateAnnouncementTextBlock(ctx, chatID, blockID, content, clientToken)
+}
+
+func (c *CommandCaptureClient) BotOpenID() string {
+	return c.Base.BotOpenID()
+}
+
+func (c *CommandCaptureClient) BotName() string {
+	return c.Base.BotName()
+}
+
 // NotifyingFeishuClient wraps a FeishuClient to intercept replies for
 // command capture and to send permission-issue notifications.
 type NotifyingFeishuClient struct {
@@ -205,6 +249,22 @@ func (n *NotifyingFeishuClient) commandCaptureForMessageLocked(messageID string)
 
 func (n *NotifyingFeishuClient) SetHandlers(onMessage func(*feishu.InboundMessage), onCardAction func(*feishu.CardAction) (*callback.CardActionTriggerResponse, error), onBotMenu func(*feishu.BotMenuClick), onRecall func(*feishu.MessageRecall), onReaction func(*feishu.MessageReaction)) {
 	n.Base.SetHandlers(onMessage, onCardAction, onBotMenu, onRecall, onReaction)
+}
+
+func (n *NotifyingFeishuClient) SetGroupMessagePolicy(policy feishu.GroupMessagePolicy) {
+	if configurable, ok := n.Base.(interface {
+		SetGroupMessagePolicy(feishu.GroupMessagePolicy)
+	}); ok {
+		configurable.SetGroupMessagePolicy(policy)
+	}
+}
+
+func (n *NotifyingFeishuClient) SetBotGroupAddedHandler(handler func(*feishu.BotGroupEvent)) {
+	if configurable, ok := n.Base.(interface {
+		SetBotGroupAddedHandler(func(*feishu.BotGroupEvent))
+	}); ok {
+		configurable.SetBotGroupAddedHandler(handler)
+	}
 }
 
 func (n *NotifyingFeishuClient) Start(ctx context.Context) error {
@@ -385,6 +445,54 @@ func (n *NotifyingFeishuClient) UrgentApp(ctx context.Context, messageID, userID
 
 func (n *NotifyingFeishuClient) LookupMessageSenderOpenID(ctx context.Context, messageID string) (string, error) {
 	return n.Base.LookupMessageSenderOpenID(ctx, messageID)
+}
+
+func (n *NotifyingFeishuClient) GetGroupBotCount(ctx context.Context, chatID string) (int, error) {
+	count, err := n.Base.GetGroupBotCount(ctx, chatID)
+	if err != nil {
+		n.NotifyPermissionIssue(NotifyTarget{ChatID: chatID}, err)
+	}
+	return count, err
+}
+
+func (n *NotifyingFeishuClient) ListAnnouncementBlocks(ctx context.Context, chatID string) ([]feishu.AnnouncementBlock, error) {
+	blocks, err := n.Base.ListAnnouncementBlocks(ctx, chatID)
+	if err != nil {
+		n.NotifyPermissionIssue(NotifyTarget{ChatID: chatID}, err)
+	}
+	return blocks, err
+}
+
+func (n *NotifyingFeishuClient) CreateAnnouncementTextBlock(ctx context.Context, chatID, parentBlockID, content, clientToken string) (feishu.AnnouncementBlock, error) {
+	block, err := n.Base.CreateAnnouncementTextBlock(ctx, chatID, parentBlockID, content, clientToken)
+	if err != nil {
+		n.NotifyPermissionIssue(NotifyTarget{ChatID: chatID}, err)
+	}
+	return block, err
+}
+
+func (n *NotifyingFeishuClient) CreateAnnouncementTextBlockAt(ctx context.Context, chatID, parentBlockID, content, clientToken string, index int) (feishu.AnnouncementBlock, error) {
+	block, err := n.Base.CreateAnnouncementTextBlockAt(ctx, chatID, parentBlockID, content, clientToken, index)
+	if err != nil {
+		n.NotifyPermissionIssue(NotifyTarget{ChatID: chatID}, err)
+	}
+	return block, err
+}
+
+func (n *NotifyingFeishuClient) UpdateAnnouncementTextBlock(ctx context.Context, chatID, blockID, content, clientToken string) error {
+	err := n.Base.UpdateAnnouncementTextBlock(ctx, chatID, blockID, content, clientToken)
+	if err != nil {
+		n.NotifyPermissionIssue(NotifyTarget{ChatID: chatID}, err)
+	}
+	return err
+}
+
+func (n *NotifyingFeishuClient) BotOpenID() string {
+	return n.Base.BotOpenID()
+}
+
+func (n *NotifyingFeishuClient) BotName() string {
+	return n.Base.BotName()
 }
 
 func (n *NotifyingFeishuClient) NotifyPermissionIssue(target NotifyTarget, err error) {

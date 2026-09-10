@@ -26,9 +26,24 @@ func (s *ConfigService) CommandWorkspace(msg *feishu.InboundMessage, args []stri
 		return s.ShowWorkspaceMenu(msg)
 	}
 	if args[0] == "new" {
+		if len(args) >= 2 && strings.EqualFold(strings.TrimSpace(args[1]), "worktree") {
+			branchName, workspaceID, err := ParseWorktreeArgs(args)
+			if err != nil {
+				return err
+			}
+			return mgmt.BeginWorkspaceWorktree(msg, branchName, workspaceID)
+		}
 		return mgmt.BeginWorkspaceNew(msg)
 	}
-	if len(args) >= 2 && args[0] == "clone" {
+	if args[0] == "clone" {
+		if len(args) == 1 {
+			action := s.CommandActionFromMessage(msg, map[string]any{"session_key": sessionKey})
+			resp, err := mgmt.CompleteWorkspaceClone(action, sessionKey)
+			if err != nil {
+				return err
+			}
+			return s.ReplyCommandActionResponse(msg, resp)
+		}
 		repoURL, workspaceID, parentDir, err := ParseCloneArgs(args)
 		if err != nil {
 			return err
@@ -65,7 +80,7 @@ func (s *ConfigService) CommandWorkspace(msg *feishu.InboundMessage, args []stri
 		reply := "已删除工作区 " + workspaceID + "，仅移除配置，未删除目录"
 		return s.App.Feishu().ReplyText(context.Background(), msg.MessageID, reply, appcore.ReplyInThreadEnabled(s.App, msg.ChatType))
 	}
-	if args[0] == "permissions" || args[0] == "sandbox" || args[0] == "policy" {
+	if args[0] == "permissions" || args[0] == "sandbox" || args[0] == "policy" || args[0] == "multiagent" {
 		return appbackend.DriverForApp(s.App).Permission().HandleWorkspaceCommand(appbackend.WorkspacePermissionCommandRequest{
 			Message:    msg,
 			Args:       args,
@@ -90,6 +105,9 @@ func (s *ConfigService) CommandWorkspace(msg *feishu.InboundMessage, args []stri
 				_, err = s.App.Feishu().ReplyCard(context.Background(), msg.MessageID, card, appcore.ReplyInThreadEnabled(s.App, msg.ChatType))
 				return err
 			},
+			ShowWorkspaceMultiAgentMenu: func(msg *feishu.InboundMessage) error {
+				return s.ShowWorkspaceMultiAgentMenu(msg)
+			},
 			CompleteWorkspaceSandboxSet: func(action *feishu.CardAction, sessionKey, workspaceID, sandboxMode string) (*callback.CardActionTriggerResponse, error) {
 				return mgmt.CompleteWorkspaceSandboxSet(action, sessionKey, workspaceID, sandboxMode)
 			},
@@ -98,6 +116,9 @@ func (s *ConfigService) CommandWorkspace(msg *feishu.InboundMessage, args []stri
 			},
 			CompleteWorkspacePermissionModeSet: func(action *feishu.CardAction, sessionKey, workspaceID, rawMode string) (*callback.CardActionTriggerResponse, error) {
 				return mgmt.CompleteWorkspacePermissionModeSet(action, sessionKey, workspaceID, rawMode)
+			},
+			CompleteWorkspaceMultiAgentSet: func(action *feishu.CardAction, sessionKey, workspaceID, mode string) (*callback.CardActionTriggerResponse, error) {
+				return mgmt.CompleteWorkspaceMultiAgentSet(action, sessionKey, workspaceID, mode)
 			},
 			ReplyCommandActionResponse: s.ReplyCommandActionResponse,
 			CommandActionFromMessage:   s.CommandActionFromMessage,
@@ -182,6 +203,16 @@ func (s *ConfigService) ShowWorkspacePolicyMenu(msg *feishu.InboundMessage) erro
 	return err
 }
 
+// ShowWorkspaceMultiAgentMenu shows the multi-agent mode configuration menu.
+func (s *ConfigService) ShowWorkspaceMultiAgentMenu(msg *feishu.InboundMessage) error {
+	card, err := s.RenderMultiAgentMenuCard(appcore.MakeSessionKey(s.App, msg))
+	if err != nil {
+		return err
+	}
+	_, err = s.App.Feishu().ReplyCard(context.Background(), msg.MessageID, card, appcore.ReplyInThreadEnabled(s.App, msg.ChatType))
+	return err
+}
+
 // ShowWorkspaceDeleteMenu shows the workspace delete menu.
 func (s *ConfigService) ShowWorkspaceDeleteMenu(msg *feishu.InboundMessage) error {
 	card, err := s.RenderDeleteMenuCard(appcore.MakeSessionKey(s.App, msg))
@@ -216,6 +247,17 @@ func (s *ConfigService) ValidateWorkspaceDeletion(sessionKey, workspaceID string
 		}
 		if SessionReferencesWorkspace(sess, workspaceID) {
 			return fmt.Errorf("workspace %q 仍有运行中的任务，无法删除", workspaceID)
+		}
+	}
+	if s.App != nil && s.App.Store() != nil {
+		stateFacade := appcore.NewAppState(s.App)
+		for _, binding := range s.App.Store().AllAgentBindings() {
+			if binding == nil || !stateFacade.MatchesFrontend(binding.FrontendID) {
+				continue
+			}
+			if strings.TrimSpace(binding.WorkspaceID) == workspaceID {
+				return fmt.Errorf("workspace %q 仍被某个群里的当前 Bot 工作区配置使用，请先在对应群聊中用 /workspace use 切换", workspaceID)
+			}
 		}
 	}
 	return nil

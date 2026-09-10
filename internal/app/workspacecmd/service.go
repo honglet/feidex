@@ -4,6 +4,7 @@ package workspacecmd
 
 import (
 	"context"
+	"strings"
 
 	"feidex/internal/app/appcore"
 	appworkspace "feidex/internal/app/workspace"
@@ -20,11 +21,14 @@ type (
 	SettingOption               = appworkspace.SettingOption
 	NewPayload                  = appworkspace.NewPayload
 	ClonePayload                = appworkspace.ClonePayload
+	WorktreePayload             = appworkspace.WorktreePayload
 	CloneTakeoverError          = appworkspace.CloneTakeoverError
 	CloneExistingDirError       = appworkspace.CloneExistingDirError
 	CloneExistingWorkspaceError = appworkspace.CloneExistingWorkspaceError
 	CloneProgressSnapshot       = appworkspace.CloneProgressSnapshot
 	ClonePlan                   = appworkspace.ClonePlan
+	CloneWorktreePlan           = appworkspace.CloneWorktreePlan
+	WorktreePlan                = appworkspace.WorktreePlan
 	CloneProgressReporter       = appworkspace.CloneProgressReporter
 	CloneOperation              = appworkspace.CloneOperation
 	CloneTracker                = appworkspace.CloneTracker
@@ -41,17 +45,25 @@ const (
 	PathPickerModeDirectory = appworkspace.PathPickerModeDirectory
 	PathPickerModeFile      = appworkspace.PathPickerModeFile
 	PathPickerStyleDropdown = appworkspace.PathPickerStyleDropdown
+	CloneModeWorkspace      = appworkspace.CloneModeWorkspace
+	CloneModeWorktree       = appworkspace.CloneModeWorktree
 )
 
 // Var aliases from the workspace sub-package.
 var (
 	SandboxOptions               = appworkspace.SandboxOptions
 	ApprovalPolicyOptions        = appworkspace.ApprovalPolicyOptions
+	MultiAgentModeOptions        = appworkspace.MultiAgentModeOptions
 	ParseCloneArgs               = appworkspace.ParseCloneArgs
+	ParseWorktreeArgs            = appworkspace.ParseWorktreeArgs
 	NewPayloadFromPending        = appworkspace.NewPayloadFromPending
 	ClonePayloadFromPending      = appworkspace.ClonePayloadFromPending
+	WorktreePayloadFromPending   = appworkspace.WorktreePayloadFromPending
 	MergeNewFormValues           = appworkspace.MergeNewFormValues
 	MergeCloneFormValues         = appworkspace.MergeCloneFormValues
+	MergeWorktreeFormValues      = appworkspace.MergeWorktreeFormValues
+	NormalizeCloneMode           = appworkspace.NormalizeCloneMode
+	CloneCreatesWorktree         = appworkspace.CloneCreatesWorktree
 	NewTakeoverPayload           = appworkspace.NewTakeoverPayload
 	NewTakeoverPayloadWithNotice = appworkspace.NewTakeoverPayloadWithNotice
 	NewExistingWorkspaceNotice   = appworkspace.NewExistingWorkspaceNotice
@@ -60,7 +72,10 @@ var (
 	SortThreadsByUpdated         = appworkspace.SortThreadsByUpdated
 	CloneRepoName                = appworkspace.CloneRepoName
 	CloneDefaultID               = appworkspace.CloneDefaultID
+	SuggestedWorktreeID          = appworkspace.SuggestedWorktreeID
+	SuggestedWorktreeBranch      = appworkspace.SuggestedWorktreeBranch
 	GitClone                     = appworkspace.GitClone
+	GitWorktreeAdd               = appworkspace.GitWorktreeAdd
 	NewCloneTracker              = appworkspace.NewCloneTracker
 	NewCloneOperation            = appworkspace.NewCloneOperation
 	ReadCloneOutput              = appworkspace.ReadCloneOutput
@@ -122,10 +137,11 @@ type (
 
 // Clone operation callbacks.
 type (
-	SetCloneOpFn   func(requestID string, op *CloneOperation)
-	GetCloneOpFn   func(requestID string) *CloneOperation
-	ClearCloneOpFn func(requestID string)
-	GitCloneFn     func(ctx context.Context, repoURL, targetDir string, report CloneProgressReporter) error
+	SetCloneOpFn     func(requestID string, op *CloneOperation)
+	GetCloneOpFn     func(requestID string) *CloneOperation
+	ClearCloneOpFn   func(requestID string)
+	GitCloneFn       func(ctx context.Context, repoURL, targetDir string, report CloneProgressReporter) error
+	GitWorktreeAddFn func(ctx context.Context, baseRepoRoot, branchName, targetDir string) error
 )
 
 // Codex client callbacks.
@@ -167,11 +183,14 @@ type (
 
 // Render callbacks.
 type (
-	RenderWorkspaceMenuCardFn          func(sessionKey string) map[string]any
-	RenderWorkspaceSandboxMenuCardFn   func(sessionKey string) (map[string]any, error)
-	RenderWorkspacePolicyMenuCardFn    func(sessionKey string) (map[string]any, error)
-	RenderWorkspaceDeleteMenuCardFn    func(sessionKey string) (map[string]any, error)
-	RenderWorkspaceDeleteConfirmCardFn func(sessionKey, workspaceID string) (map[string]any, error)
+	RenderWorkspaceMenuCardFn           func(sessionKey string) map[string]any
+	RenderWorkspaceSandboxMenuCardFn    func(sessionKey string) (map[string]any, error)
+	RenderWorkspacePolicyMenuCardFn     func(sessionKey string) (map[string]any, error)
+	RenderWorkspaceMultiAgentMenuCardFn func(sessionKey string) (map[string]any, error)
+	RenderWorkspaceDeleteMenuCardFn     func(sessionKey string) (map[string]any, error)
+	RenderWorkspaceDeleteConfirmCardFn  func(sessionKey, workspaceID string) (map[string]any, error)
+	WorkspaceIDForSessionFn             func(sessionKey string, sess *state.Session) string
+	WorkspaceMenuBodyLinesFn            func(sessionKey string, sess *state.Session, lines []string) []string
 )
 
 // ---------------------------------------------------------------------------
@@ -206,10 +225,11 @@ type ThreadDeps struct {
 }
 
 type CloneDeps struct {
-	SetCloneOp   SetCloneOpFn
-	GetCloneOp   GetCloneOpFn
-	ClearCloneOp ClearCloneOpFn
-	GitClone     GitCloneFn
+	SetCloneOp     SetCloneOpFn
+	GetCloneOp     GetCloneOpFn
+	ClearCloneOp   ClearCloneOpFn
+	GitClone       GitCloneFn
+	GitWorktreeAdd GitWorktreeAddFn
 }
 
 type CodexDeps struct {
@@ -248,6 +268,7 @@ type ConfigRenderDeps struct {
 	RenderChooseMenuCard          RenderWorkspaceMenuCardFn
 	RenderSandboxMenuCard         RenderWorkspaceSandboxMenuCardFn
 	RenderPolicyMenuCard          RenderWorkspacePolicyMenuCardFn
+	RenderMultiAgentMenuCard      RenderWorkspaceMultiAgentMenuCardFn
 	RenderDeleteMenuCard          RenderWorkspaceDeleteMenuCardFn
 	RenderDeleteConfirmCard       RenderWorkspaceDeleteConfirmCardFn
 	RenderCloneSwitchExistingCard func(sessionKey, workspaceID, targetDir string) map[string]any
@@ -258,6 +279,11 @@ type ManagementRenderDeps struct {
 	RenderCloneCard               func(sessionKey, requestID string, payload ClonePayload) map[string]any
 	RenderClonePreparingCard      func(requestID string, payload ClonePayload, parentDir string, snapshot CloneProgressSnapshot) map[string]any
 	RenderCloneSuccessCard        func(sessionKey, workspaceID, targetDir string) map[string]any
+	RenderWorktreeCard            func(sessionKey, requestID string, payload WorktreePayload) map[string]any
+	RenderWorktreePreparingCard   func(requestID string, payload WorktreePayload, plan *WorktreePlan, snapshot CloneProgressSnapshot) map[string]any
+	RenderWorktreeSuccessCard     func(sessionKey, workspaceID, targetDir string) map[string]any
+	RenderWorktreeManualHintCard  func(sessionKey, workspaceID, targetDir, errText string) map[string]any
+	RenderWorktreeCanceledCard    func(sessionKey string, payload WorktreePayload, plan *WorktreePlan, snapshot CloneProgressSnapshot) map[string]any
 	RenderSwitchExistingCard      func(sessionKey, workspaceID, targetDir, notice string) map[string]any
 	RenderCloneSwitchExistingCard func(sessionKey, workspaceID, targetDir string) map[string]any
 	RenderCloneManualHintCard     func(sessionKey, workspaceID, targetDir, errText string) map[string]any
@@ -304,12 +330,14 @@ type ManagementDeps struct {
 }
 
 type RenderDeps struct {
-	App        App
-	State      StateDeps
-	Backend    BackendConfigDeps
-	Formatting FormattingDeps
-	PathPicker PathPickerDeps
-	Management RenderManagementDeps
+	App                    App
+	State                  StateDeps
+	Backend                BackendConfigDeps
+	Formatting             FormattingDeps
+	PathPicker             PathPickerDeps
+	Management             RenderManagementDeps
+	WorkspaceIDForSession  WorkspaceIDForSessionFn
+	WorkspaceMenuBodyLines WorkspaceMenuBodyLinesFn
 }
 
 type ThreadServiceDeps struct {
@@ -500,6 +528,12 @@ func (s ConfigService) RenderPolicyMenuCard(sessionKey string) (map[string]any, 
 	}
 	return s.deps.Render.RenderPolicyMenuCard(sessionKey)
 }
+func (s ConfigService) RenderMultiAgentMenuCard(sessionKey string) (map[string]any, error) {
+	if s.deps.Render.RenderMultiAgentMenuCard == nil {
+		return nil, nil
+	}
+	return s.deps.Render.RenderMultiAgentMenuCard(sessionKey)
+}
 func (s ConfigService) RenderDeleteMenuCard(sessionKey string) (map[string]any, error) {
 	if s.deps.Render.RenderDeleteMenuCard == nil {
 		return nil, nil
@@ -651,6 +685,12 @@ func (s ManagementService) GitClone(ctx context.Context, repoURL, targetDir stri
 	}
 	return s.deps.Clone.GitClone(ctx, repoURL, targetDir, report)
 }
+func (s ManagementService) GitWorktreeAdd(ctx context.Context, baseRepoRoot, branchName, targetDir string) error {
+	if s.deps.Clone.GitWorktreeAdd != nil {
+		return s.deps.Clone.GitWorktreeAdd(ctx, baseRepoRoot, branchName, targetDir)
+	}
+	return GitWorktreeAdd(ctx, baseRepoRoot, branchName, targetDir)
+}
 func (s ManagementService) RequireCodexClient() (CodexClient, error) {
 	if s.deps.Codex.RequireCodexClient == nil {
 		return nil, nil
@@ -757,6 +797,36 @@ func (s ManagementService) RenderCloneSuccessCard(sessionKey, workspaceID, targe
 	}
 	return s.deps.Render.RenderCloneSuccessCard(sessionKey, workspaceID, targetDir)
 }
+func (s ManagementService) RenderWorktreeCard(sessionKey, requestID string, payload WorktreePayload) map[string]any {
+	if s.deps.Render.RenderWorktreeCard == nil {
+		return nil
+	}
+	return s.deps.Render.RenderWorktreeCard(sessionKey, requestID, payload)
+}
+func (s ManagementService) RenderWorktreePreparingCard(requestID string, payload WorktreePayload, plan *WorktreePlan, snapshot CloneProgressSnapshot) map[string]any {
+	if s.deps.Render.RenderWorktreePreparingCard == nil {
+		return nil
+	}
+	return s.deps.Render.RenderWorktreePreparingCard(requestID, payload, plan, snapshot)
+}
+func (s ManagementService) RenderWorktreeSuccessCard(sessionKey, workspaceID, targetDir string) map[string]any {
+	if s.deps.Render.RenderWorktreeSuccessCard == nil {
+		return nil
+	}
+	return s.deps.Render.RenderWorktreeSuccessCard(sessionKey, workspaceID, targetDir)
+}
+func (s ManagementService) RenderWorktreeManualHintCard(sessionKey, workspaceID, targetDir, errText string) map[string]any {
+	if s.deps.Render.RenderWorktreeManualHintCard == nil {
+		return nil
+	}
+	return s.deps.Render.RenderWorktreeManualHintCard(sessionKey, workspaceID, targetDir, errText)
+}
+func (s ManagementService) RenderWorktreeCanceledCard(sessionKey string, payload WorktreePayload, plan *WorktreePlan, snapshot CloneProgressSnapshot) map[string]any {
+	if s.deps.Render.RenderWorktreeCanceledCard == nil {
+		return nil
+	}
+	return s.deps.Render.RenderWorktreeCanceledCard(sessionKey, payload, plan, snapshot)
+}
 func (s ManagementService) RenderSwitchExistingCard(sessionKey, workspaceID, targetDir, notice string) map[string]any {
 	if s.deps.Render.RenderSwitchExistingCard == nil {
 		return nil
@@ -809,6 +879,21 @@ func (s RenderService) GetSession(key string) *state.Session {
 	}
 	return s.deps.State.GetSession(key)
 }
+
+func (s RenderService) WorkspaceIDForSession(sessionKey string, sess *state.Session) string {
+	if s.deps.WorkspaceIDForSession != nil {
+		return strings.TrimSpace(s.deps.WorkspaceIDForSession(sessionKey, sess))
+	}
+	return selectedWorkspaceIDForSession(s.App, sess)
+}
+
+func (s RenderService) WorkspaceMenuBodyLines(sessionKey string, sess *state.Session, lines []string) []string {
+	if s.deps.WorkspaceMenuBodyLines == nil {
+		return lines
+	}
+	return s.deps.WorkspaceMenuBodyLines(sessionKey, sess, lines)
+}
+
 func (s RenderService) BackendWorkspaceSummaryLines(lines []string, currentWS *config.Workspace) []string {
 	if s.deps.Backend.BackendWorkspaceSummaryLines == nil {
 		return lines
