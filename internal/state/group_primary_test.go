@@ -12,32 +12,37 @@ func TestGroupPrimaryPersistScopeAndClone(t *testing.T) {
 		t.Fatalf("Open() error = %v", err)
 	}
 	if err := store.UpsertGroupPrimary(&GroupPrimary{
-		ID:             " primary-a ",
-		ChatID:         " chat-1 ",
-		ChatType:       " GROUP ",
-		OwnerBotOpenID: " bot-a ",
+		ID:         " primary-a ",
+		FrontendID: " frontend-a ",
+		ChatID:     " chat-1 ",
+		ChatType:   " GROUP ",
+		Enabled:    true,
 	}); err != nil {
 		t.Fatalf("UpsertGroupPrimary() error = %v", err)
 	}
-	gotA := store.GetGroupPrimary("primary-a")
-	if gotA == nil || gotA.ChatID != "chat-1" || gotA.ChatType != "group" || gotA.OwnerBotOpenID != "bot-a" {
+	gotA := store.GetScopedGroupPrimary("frontend-a", "primary-a")
+	if gotA == nil || gotA.FrontendID != "frontend-a" || gotA.ChatID != "chat-1" || gotA.ChatType != "group" || !gotA.Enabled {
 		t.Fatalf("frontend-a group primary = %+v", gotA)
 	}
-	gotA.OwnerBotOpenID = "mutated"
-	if again := store.GetGroupPrimary("primary-a"); again == nil || again.OwnerBotOpenID != "bot-a" {
+	gotA.Enabled = false
+	if again := store.GetScopedGroupPrimary("frontend-a", "primary-a"); again == nil || !again.Enabled {
 		t.Fatalf("GetScopedGroupPrimary returned shared state: %+v", again)
 	}
 
 	if err := store.UpsertGroupPrimary(&GroupPrimary{
-		ID:             "primary-b",
-		ChatID:         "chat-1",
-		ChatType:       "group",
-		OwnerBotOpenID: "bot-b",
-	}); err == nil {
-		t.Fatal("UpsertGroupPrimary accepted a second owner record for the same chat")
+		ID:         "primary-b",
+		FrontendID: "frontend-b",
+		ChatID:     "chat-1",
+		ChatType:   "group",
+		Enabled:    true,
+	}); err != nil {
+		t.Fatalf("UpsertGroupPrimary rejected independent frontend state: %v", err)
 	}
-	if got := store.GroupPrimariesByChat("ignored", "group", "chat-1"); len(got) != 1 || got[0].OwnerBotOpenID != "bot-a" {
-		t.Fatalf("GroupPrimariesByChat() = %+v, want one owner", got)
+	if got := store.GroupPrimariesByChat("frontend-a", "group", "chat-1"); len(got) != 1 || !got[0].Enabled {
+		t.Fatalf("GroupPrimariesByChat(frontend-a) = %+v", got)
+	}
+	if got := store.GroupPrimariesByChat("frontend-b", "group", "chat-1"); len(got) != 1 || !got[0].Enabled {
+		t.Fatalf("GroupPrimariesByChat(frontend-b) = %+v", got)
 	}
 }
 
@@ -47,21 +52,21 @@ func TestEnsureGroupPrimaryPreservesExistingStateAndPersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	initial := &GroupPrimary{ID: " primary-group ", ChatType: " GROUP ", ChatID: " chat-1 "}
+	initial := &GroupPrimary{ID: " primary-group ", FrontendID: " frontend-a ", ChatType: " GROUP ", ChatID: " chat-1 "}
 	created, err := store.EnsureGroupPrimary(initial)
-	if err != nil || created == nil || created.ID != "primary-group" || created.OwnerBotOpenID != "" {
+	if err != nil || created == nil || created.ID != "primary-group" || created.FrontendID != "frontend-a" || created.Enabled {
 		t.Fatalf("EnsureGroupPrimary(initial) = %+v, %v", created, err)
 	}
 	if initial.ID != " primary-group " || initial.ChatType != " GROUP " || initial.ChatID != " chat-1 " {
 		t.Fatalf("EnsureGroupPrimary mutated its input: %+v", initial)
 	}
 	stale := *created
-	stale.OwnerBotOpenID = "bot-a"
+	stale.Enabled = true
 	if got, err := store.EnsureGroupPrimary(&stale); err != nil || got == nil || *got != *created {
-		t.Fatalf("EnsureGroupPrimary overwrote initialized empty owner: %+v, %v", got, err)
+		t.Fatalf("EnsureGroupPrimary overwrote initialized state: %+v, %v", got, err)
 	}
 	manual := *created
-	manual.OwnerBotOpenID = "bot-b"
+	manual.Enabled = true
 	if err := store.UpsertGroupPrimary(&manual); err != nil {
 		t.Fatal(err)
 	}
@@ -70,15 +75,15 @@ func TestEnsureGroupPrimaryPreservesExistingStateAndPersists(t *testing.T) {
 	if err != nil || got == nil || *got != *expected {
 		t.Fatalf("EnsureGroupPrimary overwrote explicit owner: %+v, %v; want %+v", got, err, expected)
 	}
-	got.OwnerBotOpenID = "mutated"
-	if again := store.GetGroupPrimary(created.ID); again == nil || *again != *expected {
+	got.Enabled = false
+	if again := store.GetScopedGroupPrimary("frontend-a", created.ID); again == nil || *again != *expected {
 		t.Fatalf("EnsureGroupPrimary returned shared state: %+v", again)
 	}
 	reopened, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if persisted := reopened.GetGroupPrimary(created.ID); persisted == nil || *persisted != *expected {
+	if persisted := reopened.GetScopedGroupPrimary("frontend-a", created.ID); persisted == nil || *persisted != *expected {
 		t.Fatalf("persisted primary = %+v, want %+v", persisted, expected)
 	}
 }

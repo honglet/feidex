@@ -6,15 +6,15 @@ import (
 	"feidex/internal/state"
 )
 
-// GroupPrimary returns this Feidex instance's primary owner setting for one group.
+// GroupPrimary returns this frontend's local primary setting for one group.
 func (s *Store) GroupPrimary(chatType, chatID string) *state.GroupPrimary {
 	if s == nil || s.Store == nil {
 		return nil
 	}
-	return s.Store.GetGroupPrimary(DefaultGroupPrimaryID(s.FrontendID, chatType, chatID))
+	return s.Store.GetScopedGroupPrimary(s.FrontendID, DefaultGroupPrimaryID(s.FrontendID, chatType, chatID))
 }
 
-// GroupPrimariesForChat returns this instance's primary records for one chat.
+// GroupPrimariesForChat returns this frontend's primary records for one chat.
 func (s *Store) GroupPrimariesForChat(chatType, chatID string) []*state.GroupPrimary {
 	if s == nil || s.Store == nil {
 		return nil
@@ -26,7 +26,7 @@ func (s *Store) GroupPrimariesForChat(chatType, chatID string) []*state.GroupPri
 	return []*state.GroupPrimary{primary}
 }
 
-// SaveGroupPrimary persists primary owner state for this Feidex instance.
+// SaveGroupPrimary persists primary state for the current frontend.
 func (s *Store) SaveGroupPrimary(primary *state.GroupPrimary) error {
 	if s == nil || s.Store == nil {
 		return nil
@@ -34,8 +34,8 @@ func (s *Store) SaveGroupPrimary(primary *state.GroupPrimary) error {
 	return s.Store.UpsertGroupPrimary(s.groupPrimaryForSave(primary))
 }
 
-// EnsureGroupPrimary initializes a group's shared owner without overwriting an
-// existing record from another frontend or an explicit primary command.
+// EnsureGroupPrimary initializes this frontend's primary state without
+// overwriting an explicit primary command.
 func (s *Store) EnsureGroupPrimary(primary *state.GroupPrimary) (*state.GroupPrimary, error) {
 	if s == nil || s.Store == nil {
 		return nil, nil
@@ -43,10 +43,9 @@ func (s *Store) EnsureGroupPrimary(primary *state.GroupPrimary) (*state.GroupPri
 	return s.Store.EnsureGroupPrimary(s.groupPrimaryForSave(primary))
 }
 
-// DefaultGroupPrimaryID is the stable state key for one group chat.
+// DefaultGroupPrimaryID is the stable state key for one frontend in one group.
 func DefaultGroupPrimaryID(frontendID, chatType, chatID string) string {
-	_ = frontendID
-	return "primary_" + sanitizeGroupPrimaryIDPart(chatType) + "_" + sanitizeGroupPrimaryIDPart(chatID)
+	return "primary_" + sanitizeGroupPrimaryIDPart(frontendID) + "_" + sanitizeGroupPrimaryIDPart(chatType) + "_" + sanitizeGroupPrimaryIDPart(chatID)
 }
 
 func (s *Store) groupPrimaryForSave(primary *state.GroupPrimary) *state.GroupPrimary {
@@ -54,7 +53,8 @@ func (s *Store) groupPrimaryForSave(primary *state.GroupPrimary) *state.GroupPri
 		return nil
 	}
 	cp := *primary
-	if strings.TrimSpace(cp.ID) == "" {
+	cp.FrontendID = strings.TrimSpace(s.FrontendID)
+	if strings.TrimSpace(cp.ChatType) != "" && strings.TrimSpace(cp.ChatID) != "" {
 		cp.ID = DefaultGroupPrimaryID(s.FrontendID, cp.ChatType, cp.ChatID)
 	}
 	return &cp

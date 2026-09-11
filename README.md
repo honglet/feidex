@@ -100,8 +100,8 @@ feidex serve --config config.toml
 常见用法：
 
 - 明确 `@Bot` 的消息由被 `@` 的 bot 处理，适合给某个 bot 配工作区、模型或权限。
-- 没有 `@` 的普通群消息只交给本群 primary bot；用 `@pc-feidex /primary on` 设置，用 `@pc-feidex /primary status` 查看。
-- Primary 按飞书 bot name 精确匹配；同群各机器人应使用不同名称。状态文件保存 `owner_bot_name`，群公告保存 `bot_name`，marker 形如 `feidex-status-region:qnap-feidex`，不使用 bot open ID。升级旧版后需重新执行一次 `@目标机器人 /primary on`；旧公告区域会按名称或已保存的 block ID 原地更新。
+- 没有 `@` 的普通群消息只交给本群 primary bot；用唯一目标 `@pc-feidex /primary on` 设置，用 `@pc-feidex /primary status` 查看，空正文 `@pc-feidex` 也会设置 primary。
+- 每个 frontend 在每个群独立保存自己的 `primary` 布尔状态；所有 frontend 都消费 primary 切换消息，只有被唯一 @ 且 open_id 与当前 Bot 实时身份一致的 frontend 设为 `on`，其他 frontend 设为 `off`。纯 `/primary on` 或同时 @ 多个目标不会触发切换。
 - `/stop` 同时取消当前 bot 在该会话中等待的自动重试、排队输入和运行中的任务；在两次重试之间发送也有效。
 - 每个 bot 在每个群都有自己的工作区绑定，所以同一个 bot 在不同群可以进入不同项目或 worktree。
 - 多个 bot 在同一个群里也可以各自绑定不同 worktree，避免同时改同一个 checkout。

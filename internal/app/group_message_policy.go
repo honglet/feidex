@@ -26,14 +26,34 @@ func configureGroupMessagePolicy(a *App) {
 func shouldDeliverGroupMessageToApp(a *App, input feishu.GroupMessagePolicyInput) bool {
 	mentionedAny := input.MentionedAny || len(input.MentionedOpenIDs) > 0
 	mentionedSelf := messageMentionsCurrentBot(a, input.MentionedOpenIDs, input.MentionedSelf)
+	if isGroupPrimaryControlInput(input) {
+		// A primary assignment must contain exactly one mention. A bare
+		// /primary on or a multi-mention assignment is ambiguous and must not
+		// be delivered to every frontend.
+		_, ok := groupPrimaryAssignmentFromPolicyInput(input)
+		return ok
+	}
 	if shouldAcceptGroupMessage(a, input.ChatID, input.RootMessageID, input.ParentMessageID, mentionedSelf, mentionedAny) {
+		return true
+	}
+	// Every frontend must see a primary assignment so each frontend can update
+	// its own local primary state from the same Feishu event.
+	if _, ok := groupPrimaryAssignmentFromPolicyInput(input); ok {
 		return true
 	}
 	return shouldProbeGroupPrimaryForMessage(a, input.ChatID, input.RootMessageID, input.ParentMessageID, mentionedSelf, mentionedAny)
 }
 
+func groupPrimaryAssignmentFromPolicyInput(input feishu.GroupMessagePolicyInput) (groupPrimaryAssignment, bool) {
+	return groupPrimaryAssignmentFromTextAndMentions(input.Text, input.MentionedOpenIDs)
+}
+
+func isGroupPrimaryControlInput(input feishu.GroupMessagePolicyInput) bool {
+	return parsePrimaryOnCommandFromText(input.Text) || parseEmptyBotMentionFromText(input.Text)
+}
+
 func messageMentionsCurrentBot(a *App, mentionedOpenIDs []string, fallback bool) bool {
-	selfOpenID := currentBotOpenID(a)
+	selfOpenID := currentLiveBotOpenID(a)
 	if selfOpenID == "" {
 		return fallback
 	}

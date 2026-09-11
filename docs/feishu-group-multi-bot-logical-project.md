@@ -51,7 +51,7 @@ frontend 隔离以下内容：
 
 因此同一个群由 Bot A 和 Bot B 分别处理时，仍然是两个不同的本地 Session。
 
-`GroupPrimary` 是例外：它不是 frontend-scoped 状态，而是当前 Feidex 实例内按群共享的一份 owner bot open_id。本机同一 Feidex 进程里的多个 frontend 会读取同一份 `GroupPrimary`，但它们仍用各自 bot open_id 判断自己是否为 primary。
+`GroupPrimary` 也是 frontend-scoped 状态。本机同一 Feidex 进程里的多个 frontend 为同一群分别保存自己的 primary 布尔值，不读取或覆盖其他 frontend 的状态。
 
 ### 2.2 Conversation 与配置目标
 
@@ -94,17 +94,18 @@ Conversation 统一拥有消息归一化、submission queue、pending queue、wo
 
 ### 2.4 GroupPrimary
 
-`GroupPrimary` 是当前 Feidex 实例保存的“某个群的 primary owner bot open_id”本地副本。它不是当前 Bot 自己的 bool 开关，不属于 frontend 隔离状态，也和 `AgentBinding` 没有生命周期依赖：
+`GroupPrimary` 是当前 frontend 保存的“当前 Bot 是否是本群 primary”本地状态。它不保存其他 Bot 的 open_id，也和 `AgentBinding` 没有生命周期依赖：
 
-- `@Bot /primary on` 把被 `@` 的 Bot open_id 写为本群 owner；所有能看到这条群消息的 Feidex 实例都会静默同步自己的本地副本。
-- `/primary off` 不再支持；primary owner 只能通过把另一个 Bot 设为 owner 来切换，避免群内被清成无 primary 状态。
+- `@Bot /primary on` 把被 `@` 的 Bot 设为 primary；所有能看到该群消息的 frontend 都处理这条消息，被 @ 的 frontend 写入 `enabled=true`，其他 frontend 写入 `enabled=false`。
+- primary 切换必须只有一个有效 mention；纯 `/primary on` 或同时 `@` 多个目标的消息会被忽略，避免所有 frontend 同时进入错误状态。
+- `/primary off` 不再支持；primary 只能通过把另一个 Bot 设为 primary 来切换，避免群内被清成无 primary 状态。
 - `/primary on` 只写 `GroupPrimary`，不创建或修改 `AgentBinding`。
 - 群聊中的 `/workspace`、model、effort、fast 和运行参数配置只写 `AgentBinding`；单聊对应配置写入 `BotProfile`；两者都不隐式切换 primary。
 - 当前只支持从 GitHub 线上 snapshot v6 直接升级到包含 `GroupPrimary` 的当前状态；测试环境中间版本不保留兼容迁移。
-- 不引入公共存储；不同机器之间只依赖同一条群消息投递到各自 bot 后，由被 @ 的 frontend 更新本地 owner 副本。不同机器上的 owner 副本可能短暂不一致，最终以最近一次目标实例实际收到并处理的 `@Bot /primary on` 为准。
-- 同一 Feidex 实例内的多个 frontend 共享同一份群 owner 副本；非 primary frontend 过滤掉未 `@` 消息，不会影响 primary frontend 自己的 adapter 处理同一条消息。
-- 群 primary 自动初始化只在共享记录仍不存在时原子写入；查询 `bot_count` 期间若其他 frontend 已初始化或完成手动切换，迟到的查询结果沿用已有记录，不能清空或覆盖 owner。
-- 只发送空正文 `@Bot` 等价于 `/primary on`；被 @ 的 Bot 会成为本群 owner，其他 Bot 忽略该切换，不回复也不写入 owner。
+- 不引入公共存储；不同机器之间只依赖同一条群消息投递到各自 Bot 后，由各 frontend 独立更新自己的布尔状态。非目标 frontend 只交出本地 primary，目标 frontend 随后确认并成为 primary。不同机器上的状态可能在消息投递期间短暂不一致。
+- 同一 Feidex 实例内的多个 frontend 使用各自的 primary 记录；非 primary frontend 过滤掉未 `@` 消息，不会影响 primary frontend 自己的 adapter 处理同一条消息。
+- 群 primary 自动初始化只写入当前 frontend 的记录；查询 `bot_count` 期间若当前 frontend 已初始化或完成手动切换，迟到的查询结果沿用当前 frontend 已有状态。
+- 只发送空正文 `@Bot` 等价于 `/primary on`；被 @ 的 Bot 写入 `enabled=true`，其他 Bot 写入 `enabled=false`，但不回复或执行普通命令逻辑。
 
 ### 2.5 BotProfile
 
@@ -195,9 +196,9 @@ Conversation 处于 onboarding pending 状态时，当前 Bot 应处理的普通
 
 群消息不提供独立的“仅 `@` 才响应”开关。未 `@` 的普通群消息始终只由 primary Bot 处理；明确 `@Bot` 的消息始终只由被 @ 的 Bot 处理。
 
-当前 Bot 是否为 primary 的判断是本地判断：读取当前实例的 `GroupPrimary.OwnerBotOpenID`，再和当前 frontend 的 bot open_id 比较。同一实例内如果 A/B 两个 frontend 都在同一群，A 是 owner，则 A 会处理未 `@` 顶层消息，B 会丢弃；B 的丢弃不会阻止 A，因为二者各自有独立 adapter 和 group policy。
+当前 Bot 是否为 primary 的判断是本地判断：读取当前 frontend 的 `GroupPrimary.Enabled`。同一实例内如果 A/B 两个 frontend 都在同一群，A 的状态是 `true`，则 A 会处理未 `@` 顶层消息，B 会丢弃；B 的丢弃不会阻止 A，因为二者各自有独立 state、adapter 和 group policy。
 
-primary 初始化和 `AgentBinding` 无关。Bot 被加入群或首次收到群消息时，Feidex 会用 bot 身份读取群信息里的 `bot_count`：如果 `bot_count == 1`，当前 Bot 的 open_id 自动写为 owner；如果 `bot_count > 1`，先记录“已判断但未设置 owner”。用户显式执行 `@Bot /primary on` 后，所有能收到该群消息的 bot 都会把本地 owner 副本更新为被 `@` 的 Bot open_id；非目标 bot 不回复，也不执行普通命令逻辑。
+primary 初始化和 `AgentBinding` 无关。Bot 被加入群或首次收到群消息时，Feidex 会读取群信息里的 `bot_count`：如果 `bot_count == 1`，当前 frontend 自动写入 `enabled=true`；如果 `bot_count > 1`，当前 frontend 写入 `enabled=false`，等待用户明确选择。用户显式执行 `@Bot /primary on` 后，所有能收到该群消息的 frontend 都更新自己的布尔状态；非目标 bot 不回复，也不执行普通命令逻辑。
 
 如果当前 Bot 是 primary，但本群尚未配置 workspace，那么未 `@` 普通消息仍会先进入 workspace onboarding：Feidex 创建 pending `ConversationBinding` queue，按顺序暂存原消息，并在 workspace 配置完成后依次重放这些输入。
 
@@ -267,7 +268,7 @@ primary 初始化和 `AgentBinding` 无关。Bot 被加入群或首次收到群�
 /primary on
 ```
 
-`@Bot /primary on` 是切换 primary 的命令入口；只发送空正文 `@Bot` 等价于该命令。`/primary off` 不支持。owner 始终写入执行该命令的 frontend 从 Feishu 实时查询到的当前 Bot open_id，不能使用共享状态中的旧 owner 或 mention payload 中的 ID。
+`@Bot /primary on` 是切换 primary 的命令入口；只发送空正文 `@Bot` 等价于该命令。必须只有一个有效 mention；纯 `/primary on` 或多 mention 消息会被忽略。`/primary off` 不支持。所有 frontend 都会处理这条转移命令：被 @ 的 frontend 将自己的状态设为 `true`，其他 frontend 将自己的状态设为 `false`。状态只属于当前 frontend，不写入目标 Bot 的 open_id。
 
 effective-value 优先级：
 
@@ -335,15 +336,15 @@ Session / Thread 临时覆盖
 - [x] 新增 `AgentBinding` 状态模型。
 - [x] 新增 frontend-scoped `BotProfile` 状态模型，并将 p2p 配置映射到当前 Bot profile。
 - [x] `AgentBinding` 持久化、frontend scope、chat 查询、删除和深拷贝。
-- [x] 新增独立 `GroupPrimary` 状态模型，并改为保存群 owner bot open_id。
-- [x] `GroupPrimary` 明确为实例内按群共享的 owner 副本，不按 frontend 隔离。
+- [x] 新增独立 `GroupPrimary` 状态模型，并按 frontend 保存当前 Bot 的 primary 布尔状态。
+- [x] `GroupPrimary` 与其他 frontend 隔离，不保存共享 owner bot open_id。
 - [x] primary 自动初始化改为读取 Feishu 群信息 `bot_count`，不再依赖 binding 创建顺序。
 - [x] Session 持久化 `BindingID` 元数据。
 - [x] Submission 创建时固化 `BindingID` 元数据。
 - [x] 群消息路由支持 primary / direct mention / local reply link。
 - [x] 未 `@` 消息不会因为提及了其他 Bot 而误落到 primary Bot。
 - [x] 同实例多 frontend 中，非 primary frontend 的过滤不会影响 primary frontend 处理未 `@` 消息。
-- [x] `@Bot /primary on` 由被提及的 frontend 执行；非目标 frontend 静默忽略，不写入 owner。
+- [x] `@Bot /primary on` 由所有 frontend 消费；被提及的 frontend 设为 primary，非目标 frontend 设为非 primary，不执行普通命令逻辑。
 - [x] `/primary off` 不支持；空正文 `@Bot` 等价于 `/primary on`。
 - [x] SessionKey 使用 `frontend + chat`。
 - [x] `BindingID` 不参与 SessionKey 推导。

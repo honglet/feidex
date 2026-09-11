@@ -140,7 +140,7 @@ func renderHelpBodyFromRegistryScoped(backend string, groupScoped bool) string {
 		sections[group] = append(sections[group], entries...)
 	}
 	if groupScoped {
-		sections["workspace"] = append(sections["workspace"], menutypes.HelpCommandSpec{Command: "/primary on", Summary: "把当前 Bot 设为本群 primary，处理未明确 @ 的消息。"})
+		sections["workspace"] = append(sections["workspace"], menutypes.HelpCommandSpec{Command: "@Bot /primary on", Summary: "把被 @ 的 Bot 设为本群 primary，处理未明确 @ 的消息。"})
 	}
 	lines = appendHelpCommands(lines, intro)
 	for _, group := range helpGroupOrder {

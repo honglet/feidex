@@ -326,10 +326,10 @@ type groupAnnouncementStatus struct {
 }
 
 func buildGroupAnnouncementCommonStatus(a *App, chatID string, updatedAt time.Time) groupAnnouncementStatus {
-	ownerOpenID := groupPrimaryOwnerOpenID(a, "group", chatID)
+	botOpenID := currentBotOpenID(a)
 	stableLines := []string{
 		groupAnnouncementCommonTitle,
-		groupAnnouncementField("Primary Bot", groupPrimaryOwnerBotDisplayName(a, ownerOpenID)),
+		groupAnnouncementField("Primary Bot", currentBotDisplayName(a)),
 		groupAnnouncementField("Marker", groupAnnouncementCommonMarker),
 	}
 	stableContent := strings.Join(stableLines, "\n")
@@ -339,7 +339,7 @@ func buildGroupAnnouncementCommonStatus(a *App, chatID string, updatedAt time.Ti
 		content:       content,
 		stableContent: stableContent,
 		stableHash:    hashGroupAnnouncementStableContent(stableContent),
-		botOpenID:     ownerOpenID,
+		botOpenID:     botOpenID,
 		updatedAt:     updatedAt,
 	}
 }
@@ -384,10 +384,8 @@ func groupAnnouncementField(key, value string) string {
 }
 
 func groupAnnouncementBotOpenID(a *App, chatID string) string {
-	if botOpenID := strings.TrimSpace(currentBotOpenID(a)); botOpenID != "" {
-		return botOpenID
-	}
-	return strings.TrimSpace(groupPrimaryOwnerOpenID(a, "group", chatID))
+	_ = chatID
+	return strings.TrimSpace(currentBotOpenID(a))
 }
 
 func groupAnnouncementMarker(botName, botOpenID string) string {

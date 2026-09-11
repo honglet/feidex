@@ -197,8 +197,8 @@ func TestGroupAnnouncementRefreshSkipsCommonRegionForNonPrimary(t *testing.T) {
 	ff := &fakeFeishuClient{botOpenID: "bot-a-open", botName: "bot-a"}
 	a := newGroupAnnouncementTestApp(t, store, ff, "bot-a")
 	seedGroupAnnouncementBinding(t, a, "chat-1")
-	if _, err := setGroupPrimaryOwner(a, "group", "chat-1", "bot-b-open"); err != nil {
-		t.Fatalf("setGroupPrimaryOwner() error = %v", err)
+	if _, err := setGroupPrimary(a, "group", "chat-1", false); err != nil {
+		t.Fatalf("setGroupPrimary(false) error = %v", err)
 	}
 
 	if err := refreshGroupAnnouncementStatusNow(context.Background(), a, "chat-1"); err != nil {
