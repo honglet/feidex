@@ -180,10 +180,6 @@ func (c *CommandCaptureClient) UpdateAnnouncementTextBlock(ctx context.Context, 
 	return c.Base.UpdateAnnouncementTextBlock(ctx, chatID, blockID, content, clientToken)
 }
 
-func (c *CommandCaptureClient) BotOpenID() string {
-	return c.Base.BotOpenID()
-}
-
 func (c *CommandCaptureClient) BotName() string {
 	return c.Base.BotName()
 }
@@ -485,10 +481,6 @@ func (n *NotifyingFeishuClient) UpdateAnnouncementTextBlock(ctx context.Context,
 		n.NotifyPermissionIssue(NotifyTarget{ChatID: chatID}, err)
 	}
 	return err
-}
-
-func (n *NotifyingFeishuClient) BotOpenID() string {
-	return n.Base.BotOpenID()
 }
 
 func (n *NotifyingFeishuClient) BotName() string {

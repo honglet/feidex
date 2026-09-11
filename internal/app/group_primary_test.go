@@ -26,10 +26,12 @@ func TestGroupPrimaryLateInitializationPreservesManualSwitch(t *testing.T) {
 			a, ffA, _ := newTestApp(t)
 			a.frontendID = "bot-a"
 			ffA.botOpenID = "bot-a-open"
+			ffA.botName = "bot-a"
 			b, ffB, _ := newTestApp(t)
 			b.frontendID = "bot-b"
 			b.store = a.store
 			ffB.botOpenID = "bot-b-open"
+			ffB.botName = "bot-b"
 			ffB.botName = "bot-b"
 			ffB.groupBotCounts = map[string]int{"chat-primary": 2}
 			ffB.announcementBlocks = []feishu.AnnouncementBlock{{
@@ -75,8 +77,8 @@ func TestGroupPrimaryLateInitializationPreservesManualSwitch(t *testing.T) {
 				ChatType:         "group",
 				UserID:           "user-1",
 				Text:             "/primary on",
-				MentionedOpenIDs: []string{"bot-b-open"},
-				MentionedSelf:    true,
+				MentionedOpenIDs: []string{"bot-b-open"}, MentionedNames: []string{"bot-b"},
+				MentionedSelf: true,
 			})
 			cards := ffB.replyCardsSnapshot()
 			if len(cards) != 1 || !strings.Contains(cardMarkdownContent(t, cards[0]), "已更新 primary: `on`") {
@@ -86,7 +88,7 @@ func TestGroupPrimaryLateInitializationPreservesManualSwitch(t *testing.T) {
 			close(releaseProbe)
 			select {
 			case result := <-initialized:
-				if result.err != nil || result.primary == nil || result.primary.OwnerBotOpenID != "bot-b-open" {
+				if result.err != nil || result.primary == nil || result.primary.OwnerBotName != "bot-b" {
 					t.Fatalf("late initialization = %+v, %v; want bot-b to remain owner", result.primary, result.err)
 				}
 			case <-ctx.Done():
@@ -113,10 +115,12 @@ func TestGroupPrimaryAssignmentAcrossSharedFrontends(t *testing.T) {
 			a, ffA, _ := newTestApp(t)
 			a.frontendID = "bot-a"
 			ffA.botOpenID = "bot-a-open"
+			ffA.botName = "bot-a"
 			b, ffB, _ := newTestApp(t)
 			b.frontendID = "bot-b"
 			b.store = a.store
 			ffB.botOpenID = "bot-b-open"
+			ffB.botName = "bot-b"
 			if _, err := setGroupPrimary(a, "group", "chat-primary", true); err != nil {
 				t.Fatal(err)
 			}
@@ -126,7 +130,7 @@ func TestGroupPrimaryAssignmentAcrossSharedFrontends(t *testing.T) {
 				ChatType:         "group",
 				UserID:           "user-1",
 				Text:             "@bot-b /primary on",
-				MentionedOpenIDs: []string{"bot-b-open"},
+				MentionedOpenIDs: []string{"bot-b-open"}, MentionedNames: []string{"bot-b"},
 			}
 			targetMsg := msg
 			targetMsg.Text = "/primary on"
@@ -145,5 +149,64 @@ func TestGroupPrimaryAssignmentAcrossSharedFrontends(t *testing.T) {
 				t.Fatal("only the target bot should acknowledge the primary switch")
 			}
 		})
+	}
+}
+
+func TestGroupPrimaryUsesNamesAcrossIndependentBotApps(t *testing.T) {
+	for _, targetFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("target_first_%t", targetFirst), func(t *testing.T) {
+			a, fa, _ := newTestApp(t)
+			b, fb, _ := newTestApp(t)
+			fa.botName, fa.botOpenID = "pc-feidex", "pc-local-id"
+			fb.botName, fb.botOpenID = "qnap-feidex", "qnap-local-id"
+			// Independent stores model bots deployed on different machines/apps.
+			for _, bot := range []*App{a, b} {
+				if _, err := setGroupPrimaryOwner(bot, "group", "chat-primary", "pc-feidex"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			remote := &feishu.InboundMessage{ChatID: "chat-primary", ChatType: "group", MessageID: "switch", UserID: "user-1", Text: "@qnap-feidex /primary on", MentionedNames: []string{"qnap-feidex"}, MentionedOpenIDs: []string{"qnap-id-as-seen-by-pc"}, MentionedAny: true}
+			local := *remote
+			local.MentionedOpenIDs = []string{"qnap-id-after-rotation"}
+			local.MentionedSelf = false // Name selection must not depend on this transport flag.
+			if targetFirst {
+				b.HandleFeishuMessage(&local)
+				a.HandleFeishuMessage(remote)
+			} else {
+				a.HandleFeishuMessage(remote)
+				b.HandleFeishuMessage(&local)
+			}
+			fa.botOpenID, fb.botOpenID = "changed-pc-id", "changed-qnap-id"
+			for _, bot := range []*App{a, b} {
+				if got := groupPrimaryOwnerName(bot, "group", "chat-primary"); got != "qnap-feidex" {
+					t.Fatalf("owner = %q", got)
+				}
+			}
+			if isGroupPrimary(a, "group", "chat-primary") || !isGroupPrimary(b, "group", "chat-primary") {
+				t.Fatal("routing depended on app-scoped IDs")
+			}
+			if len(fa.replyCardsSnapshot()) != 0 || len(fb.replyCardsSnapshot()) != 1 {
+				t.Fatal("only the named target should acknowledge")
+			}
+		})
+	}
+}
+
+func TestGroupPrimaryDoesNotFallBackToOpenID(t *testing.T) {
+	a, ff, _ := newTestApp(t)
+	ff.botName, ff.botOpenID = "", "qnap-feidex"
+	if _, err := setGroupPrimary(a, "group", "chat-primary", true); err == nil {
+		t.Fatal("unnamed bot claimed primary")
+	}
+	if _, err := setGroupPrimaryOwner(a, "group", "chat-primary", "qnap-feidex"); err != nil {
+		t.Fatal(err)
+	}
+	if isGroupPrimary(a, "group", "chat-primary") {
+		t.Fatal("OpenID was treated as a bot name")
+	}
+	for _, names := range [][]string{nil, {""}, {"qnap-feidex", "pc-feidex"}} {
+		if _, ok := groupPrimaryAssignmentFromMessage(&feishu.InboundMessage{ChatType: "group", Text: "/primary on", MentionedNames: names, MentionedOpenIDs: []string{"qnap-feidex"}}); ok {
+			t.Fatalf("ambiguous/missing names accepted: %v", names)
+		}
 	}
 }

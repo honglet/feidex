@@ -20,6 +20,13 @@ func isTerminalTurnStatus(status string) bool {
 }
 
 func reconcileCompletedCodexTurnFromFinalOutput(a *App, sessionKey string, sess *state.Session) *state.Session {
+	if a == nil || sess == nil || !newTurnStreamService(a).turnStreamSawFinal(strings.TrimSpace(sess.ActiveTurnID)) {
+		return sess
+	}
+	return reconcileCompletedCodexTurn(a, sessionKey, sess)
+}
+
+func reconcileCompletedCodexTurn(a *App, sessionKey string, sess *state.Session) *state.Session {
 	if a == nil || sess == nil {
 		return sess
 	}
@@ -35,7 +42,7 @@ func reconcileCompletedCodexTurnFromFinalOutput(a *App, sessionKey string, sess 
 	}
 	threadID := strings.TrimSpace(sess.ActiveThreadID)
 	turnID := strings.TrimSpace(sess.ActiveTurnID)
-	if threadID == "" || turnID == "" || !newTurnStreamService(a).turnStreamSawFinal(turnID) {
+	if threadID == "" || turnID == "" {
 		return sess
 	}
 

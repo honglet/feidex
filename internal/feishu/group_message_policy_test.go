@@ -14,6 +14,7 @@ func TestConvertMessageUsesGroupPolicyAndPreservesMentions(t *testing.T) {
 		chatID, rootID, parentID string
 		text                     string
 		mentions                 []string
+		names                    []string
 		any                      bool
 		self                     bool
 	}
@@ -23,6 +24,7 @@ func TestConvertMessageUsesGroupPolicyAndPreservesMentions(t *testing.T) {
 		captured.parentID = input.ParentMessageID
 		captured.text = input.Text
 		captured.mentions = append([]string(nil), input.MentionedOpenIDs...)
+		captured.names = append([]string(nil), input.MentionedNames...)
 		captured.any = input.MentionedAny
 		captured.self = input.MentionedSelf
 		return true
@@ -49,7 +51,7 @@ func TestConvertMessageUsesGroupPolicyAndPreservesMentions(t *testing.T) {
 				RootId:      &rootID,
 				ParentId:    &parentID,
 				Content:     &content,
-				Mentions:    []*larkim.MentionEvent{{Key: &otherKey, Id: &larkim.UserId{OpenId: &otherBotID}}},
+				Mentions:    []*larkim.MentionEvent{{Key: &otherKey, Name: strPtr("qnap-feidex"), Id: &larkim.UserId{OpenId: &otherBotID}}},
 			},
 		},
 	})
@@ -58,6 +60,9 @@ func TestConvertMessageUsesGroupPolicyAndPreservesMentions(t *testing.T) {
 	}
 	if captured.chatID != chatID || captured.rootID != rootID || captured.parentID != parentID || captured.text != "@other hello" || captured.self || !captured.any || len(captured.mentions) != 1 || captured.mentions[0] != otherBotID {
 		t.Fatalf("group policy args = %+v", captured)
+	}
+	if len(captured.names) != 1 || captured.names[0] != "qnap-feidex" || len(msg.MentionedNames) != 1 || msg.MentionedNames[0] != "qnap-feidex" {
+		t.Fatalf("mention names lost: policy=%+v message=%+v", captured, msg)
 	}
 	if len(msg.MentionedOpenIDs) != 1 || msg.MentionedOpenIDs[0] != otherBotID || !msg.MentionedAny || msg.MentionedSelf {
 		t.Fatalf("inbound mention metadata = %+v", msg)
@@ -124,7 +129,7 @@ func TestConvertMessageSynthesizesEmptySelfMentionAsPrimaryCommand(t *testing.T)
 				ChatType:    &chatType,
 				MessageType: &msgType,
 				Content:     &content,
-				Mentions:    []*larkim.MentionEvent{{Key: &mentionKey, Id: &larkim.UserId{OpenId: strPtr("bot-self")}}},
+				Mentions:    []*larkim.MentionEvent{{Key: &mentionKey, Name: strPtr("qnap-feidex"), Id: &larkim.UserId{OpenId: strPtr("bot-self")}}},
 			},
 		},
 	})

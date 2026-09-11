@@ -86,7 +86,7 @@ func TestGroupAnnouncementRefreshCreatesBlockAndSkipsStableContent(t *testing.T)
 	content := ff.announcementCreateCalls[0].content
 	for _, want := range []string{
 		groupAnnouncementDivider,
-		"feidex-status-region:luban-feidex:bot-open",
+		"feidex-status-region:luban-feidex",
 		groupAnnouncementField("Bot", "luban-feidex"),
 		groupAnnouncementField("Machine IP", ""),
 		groupAnnouncementField("Workspace", a.cfg.Workspaces[0].Cwd),
@@ -99,7 +99,7 @@ func TestGroupAnnouncementRefreshCreatesBlockAndSkipsStableContent(t *testing.T)
 		}
 	}
 	record := a.State().GroupAnnouncementBlock("group", "chat-1")
-	if record == nil || record.BlockID != "announcement-block-created" || record.BotOpenID != "bot-open" || record.LastContentHash == "" {
+	if record == nil || record.BlockID != "announcement-block-created" || record.BotName != "luban-feidex" || record.LastContentHash == "" {
 		t.Fatalf("persisted announcement record = %+v", record)
 	}
 
@@ -121,7 +121,7 @@ func TestGroupAnnouncementRefreshRecreatesDeletedPersistedBlock(t *testing.T) {
 		FrontendID:      a.FrontendID(),
 		ChatID:          "chat-1",
 		ChatType:        "group",
-		BotOpenID:       "bot-open",
+		BotName:         "luban-feidex",
 		BlockID:         "deleted-block",
 		Marker:          status.marker,
 		LastContentHash: status.stableHash,
@@ -177,10 +177,10 @@ func TestGroupAnnouncementRefreshCreatesCommonRegionAtTopForPrimary(t *testing.T
 	if len(ff.announcementBlocks) < 2 || !strings.Contains(ff.announcementBlocks[0].Text, groupAnnouncementCommonMarker) {
 		t.Fatalf("announcement block order = %+v, want common block first", ff.announcementBlocks)
 	}
-	if record := a.State().GroupAnnouncementBlock(groupAnnouncementCommonChatType, "chat-1"); record == nil || record.BlockID != "announcement-block-created" || record.BotOpenID != "bot-open" || record.LastContentHash == "" {
+	if record := a.State().GroupAnnouncementBlock(groupAnnouncementCommonChatType, "chat-1"); record == nil || record.BlockID != "announcement-block-created" || record.BotName != "luban-feidex" || record.LastContentHash == "" {
 		t.Fatalf("persisted common announcement record = %+v", record)
 	}
-	if record := a.State().GroupAnnouncementBlock("group", "chat-1"); record == nil || record.BlockID != "announcement-block-created-next" || record.BotOpenID != "bot-open" || record.LastContentHash == "" {
+	if record := a.State().GroupAnnouncementBlock("group", "chat-1"); record == nil || record.BlockID != "announcement-block-created-next" || record.BotName != "luban-feidex" || record.LastContentHash == "" {
 		t.Fatalf("persisted bot announcement record = %+v", record)
 	}
 
@@ -197,7 +197,7 @@ func TestGroupAnnouncementRefreshSkipsCommonRegionForNonPrimary(t *testing.T) {
 	ff := &fakeFeishuClient{botOpenID: "bot-a-open", botName: "bot-a"}
 	a := newGroupAnnouncementTestApp(t, store, ff, "bot-a")
 	seedGroupAnnouncementBinding(t, a, "chat-1")
-	if _, err := setGroupPrimaryOwner(a, "group", "chat-1", "bot-b-open"); err != nil {
+	if _, err := setGroupPrimaryOwner(a, "group", "chat-1", "bot-b"); err != nil {
 		t.Fatalf("setGroupPrimaryOwner() error = %v", err)
 	}
 
@@ -245,7 +245,7 @@ func TestGroupAnnouncementRefreshUpdatesExistingCommonRegionByPrimary(t *testing
 	if !strings.Contains(ff.announcementUpdateCalls[0].content, groupAnnouncementField("Primary Bot", "luban-feidex")) {
 		t.Fatalf("common update content missing primary bot name:\n%s", ff.announcementUpdateCalls[0].content)
 	}
-	if record := a.State().GroupAnnouncementBlock(groupAnnouncementCommonChatType, "chat-1"); record == nil || record.BlockID != "common-block" || record.BotOpenID != "bot-open" {
+	if record := a.State().GroupAnnouncementBlock(groupAnnouncementCommonChatType, "chat-1"); record == nil || record.BlockID != "common-block" || record.BotName != "luban-feidex" {
 		t.Fatalf("persisted common record = %+v", record)
 	}
 }
@@ -263,7 +263,7 @@ func TestGroupAnnouncementRefreshRecreatesDeletedPersistedCommonRegion(t *testin
 		FrontendID:      a.FrontendID(),
 		ChatID:          "chat-1",
 		ChatType:        groupAnnouncementCommonChatType,
-		BotOpenID:       "bot-open",
+		BotName:         "luban-feidex",
 		BlockID:         "deleted-common-block",
 		Marker:          status.marker,
 		LastContentHash: status.stableHash,
@@ -286,20 +286,18 @@ func TestGroupAnnouncementRefreshRecreatesDeletedPersistedCommonRegion(t *testin
 	}
 }
 
-func TestGroupAnnouncementBotNameFallbacks(t *testing.T) {
-	store := newGroupAnnouncementStore(t)
-	ff := &fakeFeishuClient{botOpenID: "bot-open"}
-	a := newGroupAnnouncementTestApp(t, store, ff, "bot-a")
-
-	status := buildGroupAnnouncementStatus(a, "chat-1", time.Unix(1700000000, 0))
-	if !strings.Contains(status.content, groupAnnouncementField("Bot", "bot-open")) {
-		t.Fatalf("status content = %q, want bot open id fallback", status.content)
+func TestGroupAnnouncementRequiresBotName(t *testing.T) {
+	ff := &fakeFeishuClient{botOpenID: "unstable-id"}
+	a := newGroupAnnouncementTestApp(t, newGroupAnnouncementStore(t), ff, "bot-a")
+	status := buildGroupAnnouncementStatus(a, "chat-1", time.Now())
+	if status.marker != "" || status.content != "" {
+		t.Fatalf("unnamed bot created status: %+v", status)
 	}
-
-	ff.botOpenID = ""
-	status = buildGroupAnnouncementStatus(a, "chat-1", time.Unix(1700000000, 0))
-	if strings.Contains(status.content, groupAnnouncementField("Bot", "bot-a")) || !strings.Contains(status.content, groupAnnouncementField("Bot", "unknown")) {
-		t.Fatalf("status content = %q, want unknown fallback without frontend id", status.content)
+	if err := refreshGroupAnnouncementStatusNow(context.Background(), a, "chat-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(ff.announcementCreateCalls) != 0 {
+		t.Fatal("unnamed bot wrote announcement")
 	}
 }
 
@@ -307,9 +305,10 @@ func TestGroupAnnouncementRefreshRecoversExistingBlockByMarker(t *testing.T) {
 	store := newGroupAnnouncementStore(t)
 	ff := &fakeFeishuClient{
 		botOpenID: "bot-open",
+		botName:   "luban-feidex",
 		announcementBlocks: []feishu.AnnouncementBlock{{
 			BlockID: "existing-block",
-			Text:    "old\n" + groupAnnouncementMarker("bot-a", "bot-open"),
+			Text:    "old\n" + groupAnnouncementMarker("luban-feidex"),
 		}},
 	}
 	a := newGroupAnnouncementTestApp(t, store, ff, "bot-a")
@@ -329,14 +328,14 @@ func TestGroupAnnouncementRefreshRecoversExistingBlockByMarker(t *testing.T) {
 	}
 }
 
-func TestGroupAnnouncementRefreshRecoversLegacyUnknownMarker(t *testing.T) {
+func TestGroupAnnouncementRefreshRecoversLegacyMarkerByBotName(t *testing.T) {
 	store := newGroupAnnouncementStore(t)
 	ff := &fakeFeishuClient{
 		botOpenID: "bot-open",
 		botName:   "luban-feidex",
 		announcementBlocks: []feishu.AnnouncementBlock{{
 			BlockID: "legacy-block",
-			Text:    "old\n" + groupAnnouncementLegacyMarker("default", ""),
+			Text:    groupAnnouncementField("Bot", "luban-feidex") + "\n" + groupAnnouncementField("Marker", "feidex-status-region:default:old-unstable-id"),
 		}},
 	}
 	a := newGroupAnnouncementTestApp(t, store, ff, "default")
@@ -352,7 +351,7 @@ func TestGroupAnnouncementRefreshRecoversLegacyUnknownMarker(t *testing.T) {
 	if updated.blockID != "legacy-block" {
 		t.Fatalf("updated block id = %q, want legacy-block", updated.blockID)
 	}
-	if !strings.Contains(updated.content, "feidex-status-region:luban-feidex:bot-open") || !strings.Contains(updated.content, groupAnnouncementField("Bot", "luban-feidex")) {
+	if !strings.Contains(updated.content, "feidex-status-region:luban-feidex") || !strings.Contains(updated.content, groupAnnouncementField("Bot", "luban-feidex")) {
 		t.Fatalf("updated content did not replace legacy marker/name:\n%s", updated.content)
 	}
 }
@@ -361,6 +360,7 @@ func TestGroupAnnouncementRefreshSwallowsRateLimitWithoutRetry(t *testing.T) {
 	store := newGroupAnnouncementStore(t)
 	ff := &fakeFeishuClient{
 		botOpenID:             "bot-open",
+		botName:               "luban-feidex",
 		announcementCreateErr: &feishu.AnnouncementAPIError{HTTPStatus: http.StatusTooManyRequests},
 	}
 	a := newGroupAnnouncementTestApp(t, store, ff, "bot-a")
@@ -394,7 +394,7 @@ func TestGroupAnnouncementRefreshReusesBlockForSameBotIdentity(t *testing.T) {
 	if len(ff.announcementCreateCalls) != 1 || len(ff.announcementUpdateCalls) != 1 {
 		t.Fatalf("create/update calls = %d/%d", len(ff.announcementCreateCalls), len(ff.announcementUpdateCalls))
 	}
-	if !strings.Contains(ff.announcementCreateCalls[0].content, "feidex-status-region:luban-feidex:bot-open") {
+	if !strings.Contains(ff.announcementCreateCalls[0].content, "feidex-status-region:luban-feidex") {
 		t.Fatalf("created content missing bot identity marker:\n%s", ff.announcementCreateCalls[0].content)
 	}
 	if ff.announcementUpdateCalls[0].blockID != "announcement-block-created" {
@@ -410,7 +410,7 @@ func TestGroupAnnouncementRefreshReusesBlockForSameBotIdentity(t *testing.T) {
 
 func TestKnownGroupAnnouncementChatIDsDoNotTreatUnknownCanonicalSessionAsGroup(t *testing.T) {
 	store := newGroupAnnouncementStore(t)
-	ff := &fakeFeishuClient{botOpenID: "bot-open"}
+	ff := &fakeFeishuClient{botOpenID: "bot-open", botName: "luban-feidex"}
 	a := newGroupAnnouncementTestApp(t, store, ff, "bot-a")
 	if err := a.State().SaveSession(&state.Session{
 		Key:            "feishu:frontend:bot-a:chat:chat-p2p",
@@ -441,7 +441,7 @@ func TestKnownGroupAnnouncementChatIDsDoNotTreatUnknownCanonicalSessionAsGroup(t
 
 func TestKnownGroupAnnouncementChatIDsIncludesPersistedAnnouncementBlocks(t *testing.T) {
 	store := newGroupAnnouncementStore(t)
-	ff := &fakeFeishuClient{botOpenID: "bot-open"}
+	ff := &fakeFeishuClient{botOpenID: "bot-open", botName: "luban-feidex"}
 	a := newGroupAnnouncementTestApp(t, store, ff, "bot-a")
 	if err := store.UpsertGroupAnnouncementBlock(&state.GroupAnnouncementBlock{
 		ID:         "announcement-existing",
@@ -449,7 +449,7 @@ func TestKnownGroupAnnouncementChatIDsIncludesPersistedAnnouncementBlocks(t *tes
 		ChatID:     "chat-from-announcement",
 		ChatType:   "group",
 		BlockID:    "old-block",
-		Marker:     groupAnnouncementMarker("bot-open", "bot-open"),
+		Marker:     groupAnnouncementMarker("luban-feidex"),
 	}); err != nil {
 		t.Fatalf("UpsertGroupAnnouncementBlock() error = %v", err)
 	}
@@ -466,5 +466,45 @@ func TestKnownGroupAnnouncementChatIDsIncludesPersistedAnnouncementBlocks(t *tes
 	got := knownGroupAnnouncementChatIDs(a)
 	if len(got) != 1 || got[0] != "chat-from-announcement" {
 		t.Fatalf("knownGroupAnnouncementChatIDs() = %#v, want persisted announcement chat", got)
+	}
+}
+
+func TestGroupAnnouncementMarkerStableAcrossOpenIDChanges(t *testing.T) {
+	ff := &fakeFeishuClient{botName: "qnap-feidex", botOpenID: "old-id"}
+	a := newGroupAnnouncementTestApp(t, newGroupAnnouncementStore(t), ff, "frontend-a")
+	if err := refreshGroupAnnouncementStatusNow(context.Background(), a, "chat-1"); err != nil {
+		t.Fatal(err)
+	}
+	ff.botOpenID = "new-id"
+	if err := refreshGroupAnnouncementStatusNow(context.Background(), a, "chat-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(ff.announcementCreateCalls) != 1 || len(ff.announcementUpdateCalls) != 0 {
+		t.Fatal("ID change changed the announcement")
+	}
+	record := a.State().GroupAnnouncementBlock("group", "chat-1")
+	if record.BotName != "qnap-feidex" || record.Marker != "feidex-status-region:qnap-feidex" {
+		t.Fatalf("record = %+v", record)
+	}
+	for _, id := range []string{"old-id", "new-id"} {
+		if strings.Contains(ff.announcementCreateCalls[0].content, id) {
+			t.Fatal("announcement contains OpenID")
+		}
+	}
+}
+
+func TestGroupAnnouncementMarkerMatchesExactNames(t *testing.T) {
+	names := []string{"qnap-feidex", "qnap-feidex-2", "妙搭", "妙搭 二", "bot/a", "bot:a", "bot a"}
+	seen := map[string]bool{}
+	for _, name := range names {
+		marker := groupAnnouncementMarker(name)
+		if seen[marker] {
+			t.Fatalf("marker collision: %s", marker)
+		}
+		seen[marker] = true
+		blocks := []feishu.AnnouncementBlock{{BlockID: "other", Text: groupAnnouncementField("Marker", marker+"-other")}, {BlockID: "self", Text: groupAnnouncementField("Marker", marker)}}
+		if got := findAnnouncementBlockID(blocks, marker); got != "self" {
+			t.Fatalf("matched prefix for %q: %s", name, got)
+		}
 	}
 }

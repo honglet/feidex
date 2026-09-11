@@ -156,7 +156,7 @@ func normalizeGroupAnnouncementBlockValues(record *GroupAnnouncementBlock) bool 
 	record.FrontendID = strings.TrimSpace(record.FrontendID)
 	record.ChatID = strings.TrimSpace(record.ChatID)
 	record.ChatType = strings.ToLower(strings.TrimSpace(record.ChatType))
-	record.BotOpenID = strings.TrimSpace(record.BotOpenID)
+	record.BotName = strings.TrimSpace(record.BotName)
 	record.BlockID = strings.TrimSpace(record.BlockID)
 	record.Marker = strings.TrimSpace(record.Marker)
 	record.LastContentHash = strings.TrimSpace(record.LastContentHash)

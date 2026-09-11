@@ -73,6 +73,5 @@ type FeishuClient interface {
 	CreateAnnouncementTextBlock(context.Context, string, string, string, string) (feishu.AnnouncementBlock, error)
 	CreateAnnouncementTextBlockAt(context.Context, string, string, string, string, int) (feishu.AnnouncementBlock, error)
 	UpdateAnnouncementTextBlock(context.Context, string, string, string, string) error
-	BotOpenID() string
 	BotName() string
 }

@@ -46,9 +46,19 @@ func (a convBackendConversationAdapter) ResumeCodexThread(app appconvbackend.App
 }
 
 func (a convBackendConversationAdapter) InterruptCodexTurn(app appconvbackend.App, ctx context.Context, sess *state.Session) error {
-	return appconvbackend.InterruptCodexActiveTurn(appconvbackend.CodexInterruptDeps{
-		RequireClient: func() (appconvbackend.CodexRPCClient, error) { return requireCodexClient(app.(*App)) },
+	root := app.(*App)
+	err := appconvbackend.InterruptCodexActiveTurn(appconvbackend.CodexInterruptDeps{
+		RequireClient: func() (appconvbackend.CodexRPCClient, error) { return requireCodexClient(root) },
 	}, ctx, sess)
+	if err != nil && sess != nil {
+		// The turn may have failed just before interrupt reached the server. Only
+		// authoritative terminal history (or an arrived completion) can close it.
+		updated := reconcileCompletedCodexTurn(root, sess.Key, sess)
+		if updated == nil || updated.ActiveTurnID != sess.ActiveTurnID {
+			return nil
+		}
+	}
+	return err
 }
 
 func (a convBackendConversationAdapter) ContinueCodexTurn(app appconvbackend.App, sessionKey, text string) error {

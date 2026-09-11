@@ -101,6 +101,8 @@ feidex serve --config config.toml
 
 - 明确 `@Bot` 的消息由被 `@` 的 bot 处理，适合给某个 bot 配工作区、模型或权限。
 - 没有 `@` 的普通群消息只交给本群 primary bot；用 `@pc-feidex /primary on` 设置，用 `@pc-feidex /primary status` 查看。
+- Primary 按飞书 bot name 精确匹配；同群各机器人应使用不同名称。状态文件保存 `owner_bot_name`，群公告保存 `bot_name`，marker 形如 `feidex-status-region:qnap-feidex`，不使用 bot open ID。升级旧版后需重新执行一次 `@目标机器人 /primary on`；旧公告区域会按名称或已保存的 block ID 原地更新。
+- `/stop` 同时取消当前 bot 在该会话中等待的自动重试、排队输入和运行中的任务；在两次重试之间发送也有效。
 - 每个 bot 在每个群都有自己的工作区绑定，所以同一个 bot 在不同群可以进入不同项目或 worktree。
 - 多个 bot 在同一个群里也可以各自绑定不同 worktree，避免同时改同一个 checkout。
 - 单聊也支持 workspace / worktree；单聊不需要 primary，因为消息天然只发给当前 bot。

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -208,7 +209,10 @@ func refreshGroupAnnouncementStatusNow(ctx context.Context, a *App, chatID strin
 		}
 		return err
 	}
-	block := findAnnouncementBlock(blocks, groupAnnouncementMarkerCandidates(status)...)
+	block := findAnnouncementBlock(blocks, status.marker)
+	if block.BlockID == "" {
+		block = findAnnouncementBlockByBotName(blocks, status.botName)
+	}
 	if strings.TrimSpace(block.BlockID) == "" {
 		block = findAnnouncementBlockByID(blocks, record.BlockID)
 	}
@@ -239,7 +243,7 @@ func refreshGroupAnnouncementStatusNow(ctx context.Context, a *App, chatID strin
 	record.FrontendID = strings.TrimSpace(a.FrontendID())
 	record.ChatID = chatID
 	record.ChatType = "group"
-	record.BotOpenID = status.botOpenID
+	record.BotName = status.botName
 	record.BlockID = blockID
 	record.Marker = status.marker
 	record.LastContentHash = status.stableHash
@@ -307,7 +311,7 @@ func refreshGroupAnnouncementCommonStatusNow(ctx context.Context, a *App, st *ap
 	record.FrontendID = strings.TrimSpace(a.FrontendID())
 	record.ChatID = chatID
 	record.ChatType = groupAnnouncementCommonChatType
-	record.BotOpenID = status.botOpenID
+	record.BotName = status.botName
 	record.BlockID = blockID
 	record.Marker = status.marker
 	record.LastContentHash = status.stableHash
@@ -320,16 +324,15 @@ type groupAnnouncementStatus struct {
 	content       string
 	stableContent string
 	stableHash    string
-	frontendID    string
-	botOpenID     string
+	botName       string
 	updatedAt     time.Time
 }
 
 func buildGroupAnnouncementCommonStatus(a *App, chatID string, updatedAt time.Time) groupAnnouncementStatus {
-	ownerOpenID := groupPrimaryOwnerOpenID(a, "group", chatID)
+	ownerName := groupPrimaryOwnerName(a, "group", chatID)
 	stableLines := []string{
 		groupAnnouncementCommonTitle,
-		groupAnnouncementField("Primary Bot", groupPrimaryOwnerBotDisplayName(a, ownerOpenID)),
+		groupAnnouncementField("Primary Bot", groupPrimaryOwnerBotDisplayName(ownerName)),
 		groupAnnouncementField("Marker", groupAnnouncementCommonMarker),
 	}
 	stableContent := strings.Join(stableLines, "\n")
@@ -339,16 +342,17 @@ func buildGroupAnnouncementCommonStatus(a *App, chatID string, updatedAt time.Ti
 		content:       content,
 		stableContent: stableContent,
 		stableHash:    hashGroupAnnouncementStableContent(stableContent),
-		botOpenID:     ownerOpenID,
+		botName:       ownerName,
 		updatedAt:     updatedAt,
 	}
 }
 
 func buildGroupAnnouncementStatus(a *App, chatID string, updatedAt time.Time) groupAnnouncementStatus {
-	frontendID := firstNonEmpty(strings.TrimSpace(a.FrontendID()), config.DefaultFrontendID)
-	botOpenID := groupAnnouncementBotOpenID(a, chatID)
-	botName := groupAnnouncementBotName(a, botOpenID)
-	marker := groupAnnouncementMarker(botName, botOpenID)
+	botName := currentBotName(a)
+	if botName == "" {
+		return groupAnnouncementStatus{}
+	}
+	marker := groupAnnouncementMarker(botName)
 	stableLines := []string{
 		groupAnnouncementDivider,
 		groupAnnouncementField("Bot", botName),
@@ -365,8 +369,7 @@ func buildGroupAnnouncementStatus(a *App, chatID string, updatedAt time.Time) gr
 		content:       content,
 		stableContent: stableContent,
 		stableHash:    hashGroupAnnouncementStableContent(stableContent),
-		frontendID:    frontendID,
-		botOpenID:     botOpenID,
+		botName:       botName,
 		updatedAt:     updatedAt,
 	}
 }
@@ -383,80 +386,40 @@ func groupAnnouncementField(key, value string) string {
 	return fmt.Sprintf("%-*s: %s", groupAnnouncementFieldWidth, key, value)
 }
 
-func groupAnnouncementBotOpenID(a *App, chatID string) string {
-	if botOpenID := strings.TrimSpace(currentBotOpenID(a)); botOpenID != "" {
-		return botOpenID
-	}
-	return strings.TrimSpace(groupPrimaryOwnerOpenID(a, "group", chatID))
-}
-
-func groupAnnouncementMarker(botName, botOpenID string) string {
-	nameToken := groupAnnouncementMarkerToken(firstNonEmpty(strings.TrimSpace(botName), "bot"))
-	idToken := groupAnnouncementMarkerToken(firstNonEmpty(strings.TrimSpace(botOpenID), "unknown"))
-	return "feidex-status-region:" + firstNonEmpty(nameToken, "bot") + ":" + firstNonEmpty(idToken, "unknown")
-}
-
-func groupAnnouncementLegacyMarker(frontendID, botOpenID string) string {
-	return "feidex-status-region:" + firstNonEmpty(strings.TrimSpace(frontendID), config.DefaultFrontendID) + ":" + firstNonEmpty(strings.TrimSpace(botOpenID), "unknown")
-}
-
-func groupAnnouncementMarkerToken(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
+func groupAnnouncementMarker(botName string) string {
+	botName = strings.TrimSpace(botName)
+	if botName == "" {
 		return ""
 	}
-	var b strings.Builder
-	lastDash := false
-	for _, r := range value {
-		keep := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.'
-		if keep {
-			b.WriteRune(r)
-			lastDash = false
-			continue
-		}
-		if !lastDash {
-			b.WriteByte('-')
-			lastDash = true
-		}
-	}
-	return strings.Trim(b.String(), "-")
+	// Escape rather than discard characters so distinct names cannot collide.
+	return "feidex-status-region:" + url.PathEscape(botName)
 }
 
-func groupAnnouncementBotName(a *App, botOpenID string) string {
-	if a != nil && a.feishu != nil {
-		if name := strings.TrimSpace(a.feishu.BotName()); name != "" {
-			return name
+// Adopt an existing named region on upgrade without depending on the old marker's ID.
+func findAnnouncementBlockByBotName(blocks []feishu.AnnouncementBlock, botName string) feishu.AnnouncementBlock {
+	for _, block := range blocks {
+		if announcementFieldValue(block.Text, "Bot") == botName &&
+			strings.HasPrefix(announcementFieldValue(block.Text, "Marker"), "feidex-status-region:") &&
+			strings.TrimSpace(block.BlockID) != "" {
+			return block
 		}
 	}
-	return firstNonEmpty(strings.TrimSpace(botOpenID), "unknown")
+	return feishu.AnnouncementBlock{}
+}
+
+func announcementFieldValue(text, key string) string {
+	for _, line := range strings.Split(text, "\n") {
+		label, value, ok := strings.Cut(line, ":")
+		if ok && strings.TrimSpace(label) == key {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func hashGroupAnnouncementStableContent(content string) string {
 	sum := sha256.Sum256([]byte(content))
 	return hex.EncodeToString(sum[:])
-}
-
-func groupAnnouncementMarkerCandidates(status groupAnnouncementStatus) []string {
-	markers := []string{strings.TrimSpace(status.marker)}
-	frontendID := firstNonEmpty(strings.TrimSpace(status.frontendID), config.DefaultFrontendID)
-	markers = append(markers,
-		groupAnnouncementLegacyMarker(frontendID, status.botOpenID),
-		groupAnnouncementLegacyMarker(frontendID, ""),
-	)
-	out := make([]string, 0, len(markers))
-	seen := map[string]struct{}{}
-	for _, marker := range markers {
-		marker = strings.TrimSpace(marker)
-		if marker == "" {
-			continue
-		}
-		if _, ok := seen[marker]; ok {
-			continue
-		}
-		seen[marker] = struct{}{}
-		out = append(out, marker)
-	}
-	return out
 }
 
 func findAnnouncementBlockID(blocks []feishu.AnnouncementBlock, markers ...string) string {
@@ -484,13 +447,25 @@ func findAnnouncementBlock(blocks []feishu.AnnouncementBlock, markers ...string)
 	for _, block := range blocks {
 		for _, marker := range markers {
 			marker = strings.TrimSpace(marker)
-			if marker != "" && strings.Contains(block.Text, marker) && strings.TrimSpace(block.BlockID) != "" {
+			if marker != "" && announcementHasMarker(block.Text, marker) && strings.TrimSpace(block.BlockID) != "" {
 				block.BlockID = strings.TrimSpace(block.BlockID)
 				return block
 			}
 		}
 	}
 	return feishu.AnnouncementBlock{}
+}
+
+func announcementHasMarker(text, marker string) bool {
+	if announcementFieldValue(text, "Marker") == marker {
+		return true
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) == marker {
+			return true
+		}
+	}
+	return false
 }
 
 func groupAnnouncementWorkspaceDir(a *App, chatID string) string {
