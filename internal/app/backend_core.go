@@ -41,8 +41,8 @@ func setRuntimeBackend(a *App, backend string) {
 	if a == nil {
 		return
 	}
-	a.configMu.Lock()
-	defer a.configMu.Unlock()
+	a.configMutex().Lock()
+	defer a.configMutex().Unlock()
 	a.backend = normalizeRuntimeBackend(backend)
 }
 

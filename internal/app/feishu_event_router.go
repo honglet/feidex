@@ -58,6 +58,12 @@ func (r *feishuEventRouter) processMessage(msg *feishu.InboundMessage) error {
 		return nil
 	}
 	if msg.ChatType == "group" {
+		// The adapter's cached bot identity is only a transport hint. Use the
+		// mention open_id from the event as the authoritative routing signal so
+		// two frontends in one process cannot disagree about the target bot.
+		msg.MentionedSelf = messageMentionsCurrentBot(a, msg.MentionedOpenIDs, msg.MentionedSelf)
+	}
+	if msg.ChatType == "group" {
 		scheduleGroupAnnouncementStatusRefresh(a, msg.ChatID, "group_message")
 		if _, err := ensureGroupPrimaryInitialized(context.Background(), a, msg.ChatType, msg.ChatID); err != nil {
 			slog.Warn("group primary auto init failed during message processing",

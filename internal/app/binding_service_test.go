@@ -117,7 +117,7 @@ func TestGroupPrimaryAutoInitializesFromBotCountAndManualOverride(t *testing.T) 
 	}
 }
 
-func TestPrimaryMentionAssignmentSyncsNonTargetBotSilently(t *testing.T) {
+func TestPrimaryMentionAssignmentDoesNotWriteMentionedIDOnNonTargetBot(t *testing.T) {
 	a, ffA, fcA := newTestApp(t)
 	a.frontendID = "bot-a"
 	ffA.botOpenID = "bot-a-open"
@@ -140,11 +140,11 @@ func TestPrimaryMentionAssignmentSyncsNonTargetBotSilently(t *testing.T) {
 		MentionedSelf:    false,
 	})
 
-	if owner := groupPrimaryOwnerOpenID(a, "group", "chat-primary-sync"); owner != "bot-b-open" {
-		t.Fatalf("bot-a local owner = %q, want bot-b-open", owner)
+	if owner := groupPrimaryOwnerOpenID(a, "group", "chat-primary-sync"); owner != "bot-a-open" {
+		t.Fatalf("bot-a local owner = %q, want existing bot-a-open", owner)
 	}
-	if isGroupPrimary(a, "group", "chat-primary-sync") {
-		t.Fatal("bot-a still thinks it is primary after bot-b assignment")
+	if !isGroupPrimary(a, "group", "chat-primary-sync") {
+		t.Fatal("bot-a stopped being primary after non-target assignment")
 	}
 	if cards := ffA.replyCardsSnapshot(); len(cards) != 0 {
 		t.Fatalf("non-target bot reply cards = %d, want 0", len(cards))
@@ -180,6 +180,129 @@ func TestPrimaryMentionAssignmentSyncsNonTargetBotSilently(t *testing.T) {
 	}
 	if cards := ffB.replyCardsSnapshot(); len(cards) != 1 {
 		t.Fatalf("target bot reply cards = %d, want 1", len(cards))
+	}
+}
+
+func TestPrimaryMentionRoutingUsesMentionOpenIDAcrossFrontends(t *testing.T) {
+	a, ffA, fcA := newTestApp(t)
+	a.frontendID = "bot-a"
+	ffA.botOpenID = "bot-a-open"
+	fcA.callHook = func(_ context.Context, method string, _ any, _ any) error {
+		t.Fatalf("non-target bot should not call backend method %s", method)
+		return nil
+	}
+	if _, err := setGroupPrimaryOwner(a, "group", "chat-primary-identity", "bot-a-open"); err != nil {
+		t.Fatalf("seed bot-a owner error = %v", err)
+	}
+
+	b, ffB, fcB := newTestApp(t)
+	b.frontendID = "bot-b"
+	b.store = a.store
+	ffB.botOpenID = "bot-b-open"
+	fcB.callHook = func(_ context.Context, method string, _ any, _ any) error {
+		t.Fatalf("target primary command should not call backend method %s", method)
+		return nil
+	}
+
+	// Both adapters receive the same Feishu event. Deliberately invert the
+	// adapter-level MentionedSelf bit to ensure routing derives identity from
+	// the event's mention open_id.
+	a.HandleFeishuMessage(&feishu.InboundMessage{
+		MessageID:        "primary-identity-a",
+		ChatID:           "chat-primary-identity",
+		ChatType:         "group",
+		UserID:           "user-1",
+		Text:             "/primary on",
+		MentionedOpenIDs: []string{"bot-b-open"},
+		MentionedSelf:    true,
+		RootMessageID:    "primary-identity-a",
+	})
+	b.HandleFeishuMessage(&feishu.InboundMessage{
+		MessageID:        "primary-identity-b",
+		ChatID:           "chat-primary-identity",
+		ChatType:         "group",
+		UserID:           "user-1",
+		Text:             "/primary on",
+		MentionedOpenIDs: []string{"bot-b-open"},
+		MentionedSelf:    false,
+		RootMessageID:    "primary-identity-b",
+	})
+
+	if owner := groupPrimaryOwnerOpenID(a, "group", "chat-primary-identity"); owner != "bot-b-open" {
+		t.Fatalf("shared owner = %q, want bot-b-open", owner)
+	}
+	if isGroupPrimary(a, "group", "chat-primary-identity") || !isGroupPrimary(b, "group", "chat-primary-identity") {
+		t.Fatal("primary ownership did not follow the mentioned bot")
+	}
+	if cards := ffA.replyCardsSnapshot(); len(cards) != 0 {
+		t.Fatalf("non-target bot reply cards = %d, want 0", len(cards))
+	}
+	if cards := ffB.replyCardsSnapshot(); len(cards) != 1 {
+		t.Fatalf("target bot reply cards = %d, want 1", len(cards))
+	}
+}
+
+func TestCurrentOrMentionedBotOpenIDDoesNotUseAnotherMentionedBot(t *testing.T) {
+	a, ff, _ := newTestApp(t)
+	ff.botOpenID = "bot-a-open"
+
+	if got := currentOrMentionedBotOpenID(a, &feishu.InboundMessage{
+		MentionedOpenIDs: []string{"bot-b-open"},
+		MentionedSelf:    true,
+	}); got != "bot-a-open" {
+		t.Fatalf("currentOrMentionedBotOpenID(other bot) = %q, want current bot-a-open", got)
+	}
+	if got := currentOrMentionedBotOpenID(a, &feishu.InboundMessage{
+		MentionedOpenIDs: []string{"bot-a-open", "user-open"},
+		MentionedSelf:    true,
+	}); got != "bot-a-open" {
+		t.Fatalf("currentOrMentionedBotOpenID(current bot) = %q, want bot-a-open", got)
+	}
+	if got := currentOrMentionedBotOpenID(a, &feishu.InboundMessage{}); got != "bot-a-open" {
+		t.Fatalf("currentOrMentionedBotOpenID(unmentioned command) = %q, want bot-a-open", got)
+	}
+}
+
+func TestExplicitMentionRoutesGroupConfigToMentionedFrontend(t *testing.T) {
+	a, ffA, _ := newTestApp(t)
+	a.frontendID = "bot-a"
+	ffA.botOpenID = "bot-a-open"
+
+	b, ffB, _ := newTestApp(t)
+	b.frontendID = "bot-b"
+	b.store = a.store
+	b.cfg = a.cfg
+	ffB.botOpenID = "bot-b-open"
+
+	msg := func(id string) *feishu.InboundMessage {
+		return &feishu.InboundMessage{
+			MessageID:        id,
+			ChatID:           "chat-config-routing",
+			ChatType:         "group",
+			UserID:           "user-1",
+			Text:             "/workspace use default",
+			MentionedOpenIDs: []string{"bot-b-open"},
+			RootMessageID:    id,
+		}
+	}
+
+	// Both frontends receive the same event. Only the mentioned frontend may
+	// create or update its frontend-scoped group configuration.
+	a.HandleFeishuMessage(msg("config-routing-a"))
+	b.HandleFeishuMessage(msg("config-routing-b"))
+
+	if binding := agentBindingForChat(a, "group", "chat-config-routing"); binding != nil {
+		t.Fatalf("non-target frontend created group binding: %+v", binding)
+	}
+	binding := agentBindingForChat(b, "group", "chat-config-routing")
+	if binding == nil || binding.WorkspaceID != "default" || binding.FrontendID != "bot-b" {
+		t.Fatalf("target frontend group binding = %+v, want bot-b/default", binding)
+	}
+	if cards := ffA.replyCardsSnapshot(); len(cards) != 0 {
+		t.Fatalf("non-target frontend reply cards = %d, want 0", len(cards))
+	}
+	if cards := ffB.replyCardsSnapshot(); len(cards) != 1 {
+		t.Fatalf("target frontend reply cards = %d, want 1", len(cards))
 	}
 }
 

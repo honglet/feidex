@@ -101,10 +101,10 @@ Conversation 统一拥有消息归一化、submission queue、pending queue、wo
 - `/primary on` 只写 `GroupPrimary`，不创建或修改 `AgentBinding`。
 - 群聊中的 `/workspace`、model、effort、fast 和运行参数配置只写 `AgentBinding`；单聊对应配置写入 `BotProfile`；两者都不隐式切换 primary。
 - 当前只支持从 GitHub 线上 snapshot v6 直接升级到包含 `GroupPrimary` 的当前状态；测试环境中间版本不保留兼容迁移。
-- 不引入公共存储；不同机器之间只依赖同一条群消息投递到各自 bot 后，各自更新本地 owner 副本。不同机器上的 owner 副本可能短暂不一致，最终以最近一次各实例实际收到并处理的 `@Bot /primary on` 为准。
+- 不引入公共存储；不同机器之间只依赖同一条群消息投递到各自 bot 后，由被 @ 的 frontend 更新本地 owner 副本。不同机器上的 owner 副本可能短暂不一致，最终以最近一次目标实例实际收到并处理的 `@Bot /primary on` 为准。
 - 同一 Feidex 实例内的多个 frontend 共享同一份群 owner 副本；非 primary frontend 过滤掉未 `@` 消息，不会影响 primary frontend 自己的 adapter 处理同一条消息。
 - 群 primary 自动初始化只在共享记录仍不存在时原子写入；查询 `bot_count` 期间若其他 frontend 已初始化或完成手动切换，迟到的查询结果沿用已有记录，不能清空或覆盖 owner。
-- 只发送空正文 `@Bot` 不作为 `/primary on` 语法糖；切换 primary 必须显式发送 `@Bot /primary on`。
+- 只发送空正文 `@Bot` 等价于 `/primary on`；被 @ 的 Bot 会成为本群 owner，其他 Bot 忽略该切换，不回复也不写入 owner。
 
 ### 2.5 BotProfile
 
@@ -267,7 +267,7 @@ primary 初始化和 `AgentBinding` 无关。Bot 被加入群或首次收到群�
 /primary on
 ```
 
-`@Bot /primary on` 是切换 primary 的唯一命令入口；`/primary off` 不支持，空正文 `@Bot` 也不承担切换语义。
+`@Bot /primary on` 是切换 primary 的命令入口；只发送空正文 `@Bot` 等价于该命令。`/primary off` 不支持。owner 始终写入执行该命令的 frontend 从 Feishu 实时查询到的当前 Bot open_id，不能使用共享状态中的旧 owner 或 mention payload 中的 ID。
 
 effective-value 优先级：
 
@@ -343,8 +343,8 @@ Session / Thread 临时覆盖
 - [x] 群消息路由支持 primary / direct mention / local reply link。
 - [x] 未 `@` 消息不会因为提及了其他 Bot 而误落到 primary Bot。
 - [x] 同实例多 frontend 中，非 primary frontend 的过滤不会影响 primary frontend 处理未 `@` 消息。
-- [x] `@Bot /primary on` 会被所有可见 bot 用于同步本地 owner 副本；非目标 bot 静默处理。
-- [x] `/primary off` 不支持；空正文 `@Bot` 不作为 primary 切换入口。
+- [x] `@Bot /primary on` 由被提及的 frontend 执行；非目标 frontend 静默忽略，不写入 owner。
+- [x] `/primary off` 不支持；空正文 `@Bot` 等价于 `/primary on`。
 - [x] SessionKey 使用 `frontend + chat`。
 - [x] `BindingID` 不参与 SessionKey 推导。
 - [x] 群内工作区优先解析。
@@ -392,7 +392,7 @@ Session / Thread 临时覆盖
 - [x] 当前新增本地群内配置能力可以从 `/menu` 进入，并有 slash command 入口。
 - [x] 同实例多 frontend 中，非 primary frontend 过滤未 `@` 消息不会影响 primary frontend 处理。
 - [x] 同一个 Bot 在同一个群内跨 RootMessage 串行执行普通 submission。
-- [x] `/primary off` 不支持；空正文 `@Bot` 不作为 primary 切换入口。
+- [x] `/primary off` 不支持；空正文 `@Bot` 等价于 `/primary on`。
 - [x] workspace / primary 持久化恢复、workspace 解析、路由和 primary 边界有测试。
 - [x] 不破坏现有 Codex app-server thread/turn/approval 状态机。
 

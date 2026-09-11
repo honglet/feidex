@@ -25,13 +25,27 @@ func configureGroupMessagePolicy(a *App) {
 
 func shouldDeliverGroupMessageToApp(a *App, input feishu.GroupMessagePolicyInput) bool {
 	mentionedAny := input.MentionedAny || len(input.MentionedOpenIDs) > 0
-	if shouldAcceptGroupMessage(a, input.ChatID, input.RootMessageID, input.ParentMessageID, input.MentionedSelf, mentionedAny) {
+	mentionedSelf := messageMentionsCurrentBot(a, input.MentionedOpenIDs, input.MentionedSelf)
+	if shouldAcceptGroupMessage(a, input.ChatID, input.RootMessageID, input.ParentMessageID, mentionedSelf, mentionedAny) {
 		return true
 	}
-	if _, ok := groupPrimaryAssignmentFromPolicyInput(input); ok {
-		return true
+	return shouldProbeGroupPrimaryForMessage(a, input.ChatID, input.RootMessageID, input.ParentMessageID, mentionedSelf, mentionedAny)
+}
+
+func messageMentionsCurrentBot(a *App, mentionedOpenIDs []string, fallback bool) bool {
+	selfOpenID := currentBotOpenID(a)
+	if selfOpenID == "" {
+		return fallback
 	}
-	return shouldProbeGroupPrimaryForMessage(a, input.ChatID, input.RootMessageID, input.ParentMessageID, input.MentionedSelf, mentionedAny)
+	if len(mentionedOpenIDs) == 0 {
+		return fallback
+	}
+	for _, mentionedOpenID := range mentionedOpenIDs {
+		if strings.TrimSpace(mentionedOpenID) == selfOpenID {
+			return true
+		}
+	}
+	return false
 }
 
 func shouldProbeGroupPrimaryForMessage(a *App, chatID, rootMessageID, parentMessageID string, mentionedSelf, mentionedAny bool) bool {

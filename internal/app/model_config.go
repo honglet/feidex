@@ -21,7 +21,7 @@ func newModelConfigService(app *App) modelConfigService {
 		inner: modelconfig.ModelConfigService{
 			GetConfig:   func() *config.Config { return app.cfg },
 			GetCfgPath:  func() string { return app.cfgPath },
-			GetConfigMu: func() *sync.RWMutex { return &app.configMu },
+			GetConfigMu: func() *sync.RWMutex { return app.ConfigMu() },
 			ReplyText: func(ctx context.Context, msgID string, text string, replyInThread bool) error {
 				return app.feishu.ReplyText(ctx, msgID, text, replyInThread)
 			},

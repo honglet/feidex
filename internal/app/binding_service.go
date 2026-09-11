@@ -181,10 +181,17 @@ func (s bindingService) setPrimaryOwnerForMessage(msg *feishu.InboundMessage, ta
 		return nil
 	}
 	targetOpenID = strings.TrimSpace(targetOpenID)
-	if targetOpenID == "" {
+	currentOpenID := currentLiveBotOpenID(s.app)
+	if currentOpenID == "" {
 		return fmt.Errorf("bot open_id is required to set group primary")
 	}
-	updated, err := setGroupPrimaryOwner(s.app, msg.ChatType, msg.ChatID, targetOpenID)
+	// The owner is always the current frontend's live Feishu bot identity.
+	// Never persist an OpenID taken from the shared owner state or blindly from
+	// another frontend's mention payload.
+	if targetOpenID != "" && targetOpenID != currentOpenID {
+		return fmt.Errorf("primary target does not match current bot")
+	}
+	updated, err := setGroupPrimaryOwner(s.app, msg.ChatType, msg.ChatID, currentOpenID)
 	if err != nil {
 		return err
 	}
@@ -321,8 +328,8 @@ func (s bindingService) createLocalWorkspace(id, name, cwd string) (*config.Work
 	if err := os.MkdirAll(absCWD, 0o755); err != nil {
 		return nil, err
 	}
-	s.app.configMu.Lock()
-	defer s.app.configMu.Unlock()
+	s.app.configMutex().Lock()
+	defer s.app.configMutex().Unlock()
 	if config.FindWorkspace(s.app.cfg, id) != nil {
 		return nil, fmt.Errorf("workspace %q 已存在", id)
 	}

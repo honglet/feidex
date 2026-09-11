@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sync"
 
 	"feidex/internal/config"
 	"feidex/internal/state"
@@ -27,12 +28,14 @@ func NewService(cfg *config.Config, cfgPath string) (*Service, error) {
 	if len(frontends) == 0 {
 		return nil, fmt.Errorf("no frontend configured")
 	}
+	configMu := &sync.RWMutex{}
 	apps := make([]*App, 0, len(frontends))
 	for _, frontend := range frontends {
 		app, err := newFrontendApp(cfg, cfgPath, store, frontend)
 		if err != nil {
 			return nil, err
 		}
+		app.sharedConfigMu = configMu
 		apps = append(apps, app)
 	}
 	return &Service{

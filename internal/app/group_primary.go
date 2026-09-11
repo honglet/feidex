@@ -19,6 +19,10 @@ type botOpenIDProvider interface {
 	BotOpenID() string
 }
 
+type liveBotOpenIDProvider interface {
+	RefreshBotOpenID() string
+}
+
 type botNameProvider interface {
 	BotName() string
 }
@@ -76,7 +80,7 @@ func ensureGroupPrimaryInitialized(ctx context.Context, a *App, chatType, chatID
 	}
 	ownerBotOpenID := ""
 	if botCount == 1 {
-		ownerBotOpenID = currentBotOpenID(a)
+		ownerBotOpenID = currentLiveBotOpenID(a)
 		if ownerBotOpenID == "" {
 			return nil, fmt.Errorf("bot open_id is required to initialize group primary")
 		}
@@ -127,6 +131,18 @@ func currentBotOpenID(a *App) string {
 	return strings.TrimSpace(provider.BotOpenID())
 }
 
+func currentLiveBotOpenID(a *App) string {
+	if a == nil || a.feishu == nil {
+		return ""
+	}
+	if provider, ok := a.feishu.(liveBotOpenIDProvider); ok {
+		if openID := strings.TrimSpace(provider.RefreshBotOpenID()); openID != "" {
+			return openID
+		}
+	}
+	return currentBotOpenID(a)
+}
+
 func currentBotName(a *App) string {
 	if a == nil || a.feishu == nil {
 		return ""
@@ -159,13 +175,8 @@ func groupPrimaryOwnerBotDisplayName(a *App, ownerBotOpenID string) string {
 }
 
 func currentOrMentionedBotOpenID(a *App, msg *feishu.InboundMessage) string {
-	if self := currentBotOpenID(a); self != "" {
-		return self
-	}
-	if msg != nil && msg.MentionedSelf {
-		return firstMentionedOpenID(msg.MentionedOpenIDs)
-	}
-	return ""
+	_ = msg
+	return currentLiveBotOpenID(a)
 }
 
 func setGroupPrimaryOwner(a *App, chatType, chatID, ownerBotOpenID string) (*state.GroupPrimary, error) {
@@ -179,6 +190,10 @@ func setGroupPrimaryOwner(a *App, chatType, chatID, ownerBotOpenID string) (*sta
 		return nil, fmt.Errorf("group chat is required")
 	}
 	record := groupPrimaryForChat(a, chatType, chatID)
+	previousOwner := ""
+	if record != nil {
+		previousOwner = strings.TrimSpace(record.OwnerBotOpenID)
+	}
 	if record == nil {
 		record = &state.GroupPrimary{
 			ID:       appstate.DefaultGroupPrimaryID(a.FrontendID(), chatType, chatID),
@@ -194,6 +209,13 @@ func setGroupPrimaryOwner(a *App, chatType, chatID, ownerBotOpenID string) (*sta
 	if updated == nil {
 		return nil, fmt.Errorf("group primary state for %s/%s not found after update", chatType, chatID)
 	}
+	slog.Info("group primary owner written",
+		"frontend_id", strings.TrimSpace(a.FrontendID()),
+		"chat_id", chatID,
+		"previous_owner_bot_open_id", previousOwner,
+		"owner_bot_open_id", strings.TrimSpace(updated.OwnerBotOpenID),
+		"current_bot_open_id", currentBotOpenID(a),
+	)
 	return updated, nil
 }
 
@@ -202,7 +224,7 @@ func setGroupPrimary(a *App, chatType, chatID string, enabled bool) (*state.Grou
 		return nil, fmt.Errorf("clearing group primary is unsupported")
 	}
 	ownerBotOpenID := ""
-	ownerBotOpenID = currentBotOpenID(a)
+	ownerBotOpenID = currentLiveBotOpenID(a)
 	if ownerBotOpenID == "" {
 		return nil, fmt.Errorf("bot open_id is required to set group primary")
 	}
@@ -214,13 +236,15 @@ func syncGroupPrimaryAssignment(a *App, msg *feishu.InboundMessage) (bool, error
 	if !ok {
 		return false, nil
 	}
-	selfOpenID := currentBotOpenID(a)
-	targetsSelf := msg.MentionedSelf || (selfOpenID != "" && selfOpenID == assignment.TargetBotOpenID)
-	if targetsSelf {
+	selfOpenID := currentLiveBotOpenID(a)
+	if selfOpenID != "" && selfOpenID == assignment.TargetBotOpenID {
 		return false, nil
 	}
-	_, err := setGroupPrimaryOwner(a, msg.ChatType, msg.ChatID, assignment.TargetBotOpenID)
-	return true, err
+	// Every frontend receives the same group event. Only the frontend whose
+	// live bot OpenID is mentioned may execute /primary on. Other frontends
+	// consume the assignment silently and must never persist the mentioned ID:
+	// that ID may be stale, belong to another app, or be a non-bot mention.
+	return true, nil
 }
 
 func groupPrimaryAssignmentFromMessage(msg *feishu.InboundMessage) (groupPrimaryAssignment, bool) {
@@ -228,10 +252,6 @@ func groupPrimaryAssignmentFromMessage(msg *feishu.InboundMessage) (groupPrimary
 		return groupPrimaryAssignment{}, false
 	}
 	return groupPrimaryAssignmentFromTextAndMentions(msg.Text, msg.MentionedOpenIDs)
-}
-
-func groupPrimaryAssignmentFromPolicyInput(input feishu.GroupMessagePolicyInput) (groupPrimaryAssignment, bool) {
-	return groupPrimaryAssignmentFromTextAndMentions(input.Text, input.MentionedOpenIDs)
 }
 
 func groupPrimaryAssignmentFromTextAndMentions(text string, mentionedOpenIDs []string) (groupPrimaryAssignment, bool) {

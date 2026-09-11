@@ -149,6 +149,22 @@ func TestGroupMessagePolicyKeepsNonPrimaryRepliesLocal(t *testing.T) {
 	}
 }
 
+func TestGroupMessagePolicyUsesMentionOpenIDForCurrentFrontend(t *testing.T) {
+	a, ff, _ := newTestApp(t)
+	a.frontendID = "bot-b"
+	ff.botOpenID = "bot-b-open"
+	msg := feishu.GroupMessagePolicyInput{
+		ChatID:           "chat-mention-identity",
+		Text:             "/primary on",
+		MentionedOpenIDs: []string{"bot-b-open"},
+		MentionedAny:     true,
+		MentionedSelf:    false,
+	}
+	if !shouldDeliverGroupMessageToApp(a, msg) {
+		t.Fatal("group policy rejected a message that mentions the current bot by open_id")
+	}
+}
+
 func TestGroupMessagePolicyDeliversUnknownTopLevelForPrimaryAutoInit(t *testing.T) {
 	store, err := state.Open(filepath.Join(t.TempDir(), "state.json"))
 	if err != nil {
@@ -172,13 +188,11 @@ func TestGroupMessagePolicyDeliversUnknownTopLevelForPrimaryAutoInit(t *testing.
 	if shouldDeliverGroupMessageToApp(a, feishu.GroupMessagePolicyInput{ChatID: "chat-new", Text: "@unknown hello", MentionedAny: true}) {
 		t.Fatal("adapter policy delivered mention event without current bot mention")
 	}
+	a.feishu = wrapFeishuClient(&fakeFeishuClient{botOpenID: "bot-b-open"})
 	if !shouldDeliverGroupMessageToApp(a, feishu.GroupMessagePolicyInput{ChatID: "chat-new", Text: "@bot-b /primary on", MentionedOpenIDs: []string{"bot-b-open"}}) {
-		t.Fatal("adapter policy rejected explicit primary owner assignment")
+		t.Fatal("adapter policy rejected primary command addressed to the current bot")
 	}
-	if shouldDeliverGroupMessageToApp(a, feishu.GroupMessagePolicyInput{ChatID: "chat-new", Text: "@bot-b", MentionedOpenIDs: []string{"bot-b-open"}}) {
-		t.Fatal("adapter policy delivered mention-only primary owner assignment")
-	}
-	if shouldDeliverGroupMessageToApp(a, feishu.GroupMessagePolicyInput{ChatID: "chat-new", Text: "@bot-b hello", MentionedOpenIDs: []string{"bot-b-open"}}) {
+	if shouldDeliverGroupMessageToApp(a, feishu.GroupMessagePolicyInput{ChatID: "chat-new", Text: "@bot-a hello", MentionedOpenIDs: []string{"bot-a-open"}}) {
 		t.Fatal("adapter policy delivered ordinary explicit mention of another bot")
 	}
 

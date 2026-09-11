@@ -184,6 +184,13 @@ func (c *CommandCaptureClient) BotOpenID() string {
 	return c.Base.BotOpenID()
 }
 
+func (c *CommandCaptureClient) RefreshBotOpenID() string {
+	if provider, ok := c.Base.(interface{ RefreshBotOpenID() string }); ok {
+		return provider.RefreshBotOpenID()
+	}
+	return c.Base.BotOpenID()
+}
+
 func (c *CommandCaptureClient) BotName() string {
 	return c.Base.BotName()
 }
@@ -488,6 +495,13 @@ func (n *NotifyingFeishuClient) UpdateAnnouncementTextBlock(ctx context.Context,
 }
 
 func (n *NotifyingFeishuClient) BotOpenID() string {
+	return n.Base.BotOpenID()
+}
+
+func (n *NotifyingFeishuClient) RefreshBotOpenID() string {
+	if provider, ok := n.Base.(interface{ RefreshBotOpenID() string }); ok {
+		return provider.RefreshBotOpenID()
+	}
 	return n.Base.BotOpenID()
 }
 

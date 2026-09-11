@@ -81,6 +81,9 @@ func TestNewServiceBuildsFrontendScopedApps(t *testing.T) {
 	if codexApp.store != claudeApp.store {
 		t.Fatal("frontend apps should share one store")
 	}
+	if codexApp.ConfigMu() != claudeApp.ConfigMu() {
+		t.Fatal("frontend apps should share one config mutex")
+	}
 	if codexApp.frontendID != "codex-main" || codexApp.backend != backendCodex || codexApp.codex != codexClients[0] || codexApp.claude != nil {
 		t.Fatalf("codex app = %+v", codexApp)
 	}
