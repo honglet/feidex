@@ -19,7 +19,6 @@ func TestWorkspaceCommandsCreateAndUpdateLocalGroupConfig(t *testing.T) {
 	a, ff, _ := newTestApp(t)
 	a.frontendID = "bot-a"
 	ff.botOpenID = "bot-a-open"
-	ff.botName = "bot-a"
 	msg := &feishu.InboundMessage{ChatType: "group", ChatID: "chat-issue-9", MessageID: "msg-workspace", UserID: "user-1"}
 
 	if err := newBindingService(a).commandWorkspace(msg, nil); err != nil {
@@ -67,7 +66,7 @@ func TestWorkspaceCommandsCreateAndUpdateLocalGroupConfig(t *testing.T) {
 	if binding.ModelOverride != "gpt-5-binding" || binding.ReasoningEffortOverride != "high" {
 		t.Fatalf("binding user overrides = %+v", binding)
 	}
-	if primary := groupPrimaryForChat(a, "group", "chat-issue-9"); primary == nil || primary.OwnerBotName != "bot-a" || !isGroupPrimary(a, "group", "chat-issue-9") {
+	if primary := groupPrimaryForChat(a, "group", "chat-issue-9"); primary == nil || primary.OwnerBotOpenID != "bot-a-open" || !isGroupPrimary(a, "group", "chat-issue-9") {
 		t.Fatalf("group primary after /primary on = %+v, want on", primary)
 	}
 	if binding.ServiceTierOverride != "fast" || binding.SandboxModeOverride != "read-only" || binding.ApprovalPolicyOverride != "never" || binding.MultiAgentModeOverride != "proactive" || binding.ClaudePermissionMode != "acceptEdits" {
@@ -82,9 +81,8 @@ func TestGroupPrimaryAutoInitializesFromBotCountAndManualOverride(t *testing.T) 
 	a, ffA, _ := newTestApp(t)
 	a.frontendID = "bot-a"
 	ffA.botOpenID = "bot-a-open"
-	ffA.botName = "bot-a"
 	ffA.groupBotCounts = map[string]int{"chat-primary": 1}
-	fb := &fakeFeishuClient{botOpenID: "bot-b-open", botName: "bot-b", groupBotCounts: map[string]int{"chat-primary": 2}}
+	fb := &fakeFeishuClient{botOpenID: "bot-b-open", groupBotCounts: map[string]int{"chat-primary": 2}}
 	b := &App{cfg: a.cfg, cfgPath: a.cfgPath, store: a.store, frontendID: "bot-b", feishu: wrapFeishuClient(fb)}
 	configureGroupPrimaryEvents(b)
 
@@ -100,7 +98,7 @@ func TestGroupPrimaryAutoInitializesFromBotCountAndManualOverride(t *testing.T) 
 	handleBotGroupAdded(b, &feishu.BotGroupEvent{ChatID: "chat-primary"})
 
 	primary := groupPrimaryForChat(a, "group", "chat-primary")
-	if primary == nil || primary.OwnerBotName != "bot-a" || !isGroupPrimary(a, "group", "chat-primary") {
+	if primary == nil || primary.OwnerBotOpenID != "bot-a-open" || !isGroupPrimary(a, "group", "chat-primary") {
 		t.Fatalf("bot-a primary = %+v, want primary", primary)
 	}
 	if isGroupPrimary(b, "group", "chat-primary") {
@@ -111,7 +109,7 @@ func TestGroupPrimaryAutoInitializesFromBotCountAndManualOverride(t *testing.T) 
 		t.Fatalf("bot-b /primary on error = %v", err)
 	}
 	primary = groupPrimaryForChat(a, "group", "chat-primary")
-	if primary == nil || primary.OwnerBotName != "bot-b" || isGroupPrimary(a, "group", "chat-primary") {
+	if primary == nil || primary.OwnerBotOpenID != "bot-b-open" || isGroupPrimary(a, "group", "chat-primary") {
 		t.Fatalf("bot-a primary after bot-b primary = %+v, want demoted", primary)
 	}
 	if !isGroupPrimary(b, "group", "chat-primary") {
@@ -123,8 +121,7 @@ func TestPrimaryMentionAssignmentSyncsNonTargetBotSilently(t *testing.T) {
 	a, ffA, fcA := newTestApp(t)
 	a.frontendID = "bot-a"
 	ffA.botOpenID = "bot-a-open"
-	ffA.botName = "bot-a"
-	if _, err := setGroupPrimaryOwner(a, "group", "chat-primary-sync", "bot-a"); err != nil {
+	if _, err := setGroupPrimaryOwner(a, "group", "chat-primary-sync", "bot-a-open"); err != nil {
 		t.Fatalf("seed bot-a owner error = %v", err)
 	}
 	fcA.callHook = func(_ context.Context, method string, _ any, _ any) error {
@@ -139,11 +136,11 @@ func TestPrimaryMentionAssignmentSyncsNonTargetBotSilently(t *testing.T) {
 		UserID:           "user-1",
 		Text:             "@bot-b /primary on",
 		RootMessageID:    "primary-sync-non-target",
-		MentionedOpenIDs: []string{"bot-b-open"}, MentionedNames: []string{"bot-b"},
-		MentionedSelf: false,
+		MentionedOpenIDs: []string{"bot-b-open"},
+		MentionedSelf:    false,
 	})
 
-	if owner := groupPrimaryOwnerName(a, "group", "chat-primary-sync"); owner != "bot-b" {
+	if owner := groupPrimaryOwnerOpenID(a, "group", "chat-primary-sync"); owner != "bot-b-open" {
 		t.Fatalf("bot-a local owner = %q, want bot-b-open", owner)
 	}
 	if isGroupPrimary(a, "group", "chat-primary-sync") {
@@ -156,8 +153,7 @@ func TestPrimaryMentionAssignmentSyncsNonTargetBotSilently(t *testing.T) {
 	b, ffB, fcB := newTestApp(t)
 	b.frontendID = "bot-b"
 	ffB.botOpenID = "bot-b-open"
-	ffB.botName = "bot-b"
-	if _, err := setGroupPrimaryOwner(b, "group", "chat-primary-sync", "bot-a"); err != nil {
+	if _, err := setGroupPrimaryOwner(b, "group", "chat-primary-sync", "bot-a-open"); err != nil {
 		t.Fatalf("seed bot-b owner error = %v", err)
 	}
 	fcB.callHook = func(_ context.Context, method string, _ any, _ any) error {
@@ -172,11 +168,11 @@ func TestPrimaryMentionAssignmentSyncsNonTargetBotSilently(t *testing.T) {
 		UserID:           "user-1",
 		Text:             "/primary on",
 		RootMessageID:    "primary-sync-target",
-		MentionedOpenIDs: []string{"bot-b-open"}, MentionedNames: []string{"bot-b"},
-		MentionedSelf: true,
+		MentionedOpenIDs: []string{"bot-b-open"},
+		MentionedSelf:    true,
 	})
 
-	if owner := groupPrimaryOwnerName(b, "group", "chat-primary-sync"); owner != "bot-b" {
+	if owner := groupPrimaryOwnerOpenID(b, "group", "chat-primary-sync"); owner != "bot-b-open" {
 		t.Fatalf("bot-b local owner = %q, want bot-b-open", owner)
 	}
 	if !isGroupPrimary(b, "group", "chat-primary-sync") {
@@ -191,7 +187,6 @@ func TestPrimaryCommandDoesNotCreateBinding(t *testing.T) {
 	a, ff, _ := newTestApp(t)
 	a.frontendID = "bot-a"
 	ff.botOpenID = "bot-a-open"
-	ff.botName = "bot-a"
 	msg := &feishu.InboundMessage{ChatType: "group", ChatID: "chat-primary-only", MessageID: "msg-primary", UserID: "user-1"}
 
 	if err := newBindingService(a).commandPrimary(msg, []string{"on"}); err != nil {
@@ -200,7 +195,7 @@ func TestPrimaryCommandDoesNotCreateBinding(t *testing.T) {
 	if binding := agentBindingForChat(a, "group", "chat-primary-only"); binding != nil {
 		t.Fatalf("/primary created binding = %+v", binding)
 	}
-	if primary := groupPrimaryForChat(a, "group", "chat-primary-only"); primary == nil || primary.OwnerBotName != "bot-a" || !isGroupPrimary(a, "group", "chat-primary-only") {
+	if primary := groupPrimaryForChat(a, "group", "chat-primary-only"); primary == nil || primary.OwnerBotOpenID != "bot-a-open" || !isGroupPrimary(a, "group", "chat-primary-only") {
 		t.Fatalf("group primary = %+v, want on", primary)
 	}
 }
@@ -209,7 +204,6 @@ func TestPrimaryCommandCardsPreferBotName(t *testing.T) {
 	a, ff, _ := newTestApp(t)
 	a.frontendID = "bot-a"
 	ff.botOpenID = "bot-a-open"
-	ff.botName = "bot-a"
 	ff.botName = "Feidex Bot"
 	msg := &feishu.InboundMessage{ChatType: "group", ChatID: "chat-primary-name", MessageID: "msg-primary-name", UserID: "user-1"}
 
@@ -249,27 +243,26 @@ func TestPrimaryOffRejectedAndKeepsOwner(t *testing.T) {
 	a, ff, _ := newTestApp(t)
 	a.frontendID = "bot-b"
 	ff.botOpenID = "bot-b-open"
-	ff.botName = "bot-b"
 	msg := &feishu.InboundMessage{ChatType: "group", ChatID: "chat-primary-off", MessageID: "msg-primary-off", UserID: "user-1"}
 
-	if _, err := setGroupPrimaryOwner(a, "group", "chat-primary-off", "bot-a"); err != nil {
+	if _, err := setGroupPrimaryOwner(a, "group", "chat-primary-off", "bot-a-open"); err != nil {
 		t.Fatalf("seed owner error = %v", err)
 	}
 	if err := newBindingService(a).commandPrimary(msg, []string{"off"}); err == nil || !strings.Contains(err.Error(), "usage: /primary on") {
 		t.Fatalf("/primary off non-owner error = %v, want usage", err)
 	}
-	if owner := groupPrimaryOwnerName(a, "group", "chat-primary-off"); owner != "bot-a" {
+	if owner := groupPrimaryOwnerOpenID(a, "group", "chat-primary-off"); owner != "bot-a-open" {
 		t.Fatalf("owner after non-owner off = %q, want bot-a-open", owner)
 	}
 
-	if _, err := setGroupPrimaryOwner(a, "group", "chat-primary-off", "bot-b"); err != nil {
+	if _, err := setGroupPrimaryOwner(a, "group", "chat-primary-off", "bot-b-open"); err != nil {
 		t.Fatalf("seed current owner error = %v", err)
 	}
 	msg.MessageID = "msg-primary-off-owner"
 	if err := newBindingService(a).commandPrimary(msg, []string{"off"}); err == nil || !strings.Contains(err.Error(), "usage: /primary on") {
 		t.Fatalf("/primary off owner error = %v, want usage", err)
 	}
-	if owner := groupPrimaryOwnerName(a, "group", "chat-primary-off"); owner != "bot-b" {
+	if owner := groupPrimaryOwnerOpenID(a, "group", "chat-primary-off"); owner != "bot-b-open" {
 		t.Fatalf("owner after owner off = %q, want bot-b-open", owner)
 	}
 }
@@ -278,7 +271,6 @@ func TestPrimaryMessageBypassesWorkspaceOnboarding(t *testing.T) {
 	a, ff, fc := newTestApp(t)
 	a.frontendID = "bot-a"
 	ff.botOpenID = "bot-a-open"
-	ff.botName = "bot-a"
 	fc.callHook = func(_ context.Context, method string, _ any, _ any) error {
 		t.Fatalf("backend method %s should not run for /primary", method)
 		return nil
@@ -297,7 +289,7 @@ func TestPrimaryMessageBypassesWorkspaceOnboarding(t *testing.T) {
 	if binding := agentBindingForChat(a, "group", "chat-primary-onboarding"); binding != nil {
 		t.Fatalf("/primary should not create workspace binding, got %+v", binding)
 	}
-	if primary := groupPrimaryForChat(a, "group", "chat-primary-onboarding"); primary == nil || primary.OwnerBotName != "bot-a" || !isGroupPrimary(a, "group", "chat-primary-onboarding") {
+	if primary := groupPrimaryForChat(a, "group", "chat-primary-onboarding"); primary == nil || primary.OwnerBotOpenID != "bot-a-open" || !isGroupPrimary(a, "group", "chat-primary-onboarding") {
 		t.Fatalf("group primary = %+v, want on", primary)
 	}
 	cards := ff.replyCardsSnapshot()
@@ -317,7 +309,6 @@ func TestPrimaryUnmentionedGroupMessageCreatesPendingWorkspaceConfig(t *testing.
 	a, ff, fc := newTestApp(t)
 	a.frontendID = "bot-a"
 	ff.botOpenID = "bot-a-open"
-	ff.botName = "bot-a"
 	if _, err := setGroupPrimary(a, "group", "chat-pending-new", true); err != nil {
 		t.Fatalf("setGroupPrimary() error = %v", err)
 	}
@@ -351,7 +342,6 @@ func TestPendingBindingStoresAndReplaysOriginalGroupMessage(t *testing.T) {
 	a, ff, fc := newTestApp(t)
 	a.frontendID = "bot-a"
 	ff.botOpenID = "bot-a-open"
-	ff.botName = "bot-a"
 	if err := a.State().SaveAgentBinding(&state.AgentBinding{
 		ID:         "binding-pending",
 		FrontendID: "bot-a",

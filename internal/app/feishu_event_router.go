@@ -71,11 +71,11 @@ func (r *feishuEventRouter) processMessage(msg *feishu.InboundMessage) error {
 			if err != nil {
 				return err
 			}
-			slog.Debug("feishu group primary assignment processed",
+			slog.Debug("feishu group primary assignment synced by non-target bot",
 				"frontend_id", strings.TrimSpace(a.FrontendID()),
 				"message_id", msg.MessageID,
 				"chat_id", msg.ChatID,
-				"owner_bot_name", groupPrimaryOwnerName(a, msg.ChatType, msg.ChatID),
+				"owner_bot_open_id", groupPrimaryOwnerOpenID(a, msg.ChatType, msg.ChatID),
 			)
 			return nil
 		}

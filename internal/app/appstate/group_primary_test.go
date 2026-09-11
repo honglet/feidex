@@ -11,10 +11,10 @@ func TestGroupPrimaryUsesCanonicalKeyOnly(t *testing.T) {
 	store := newTestStateStore(t)
 	frontend := &Store{AppStateFacade: appcore.AppStateFacade{Store: store, FrontendID: "default"}}
 	if err := store.UpsertGroupPrimary(&state.GroupPrimary{
-		ID:           "primary_default_group_chat-1",
-		ChatID:       "chat-1",
-		ChatType:     "group",
-		OwnerBotName: "bot-a",
+		ID:             "primary_default_group_chat-1",
+		ChatID:         "chat-1",
+		ChatType:       "group",
+		OwnerBotOpenID: "bot-a",
 	}); err != nil {
 		t.Fatalf("UpsertGroupPrimary(legacy) error = %v", err)
 	}

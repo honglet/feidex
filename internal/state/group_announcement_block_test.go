@@ -17,7 +17,7 @@ func TestGroupAnnouncementBlockPersistScopeAndClone(t *testing.T) {
 		FrontendID:      " frontend-a ",
 		ChatID:          " chat-1 ",
 		ChatType:        " GROUP ",
-		BotName:         " bot-a ",
+		BotOpenID:       " bot-a ",
 		BlockID:         " block-a ",
 		Marker:          " marker-a ",
 		LastContentHash: " hash-a ",
@@ -27,7 +27,7 @@ func TestGroupAnnouncementBlockPersistScopeAndClone(t *testing.T) {
 	}
 
 	saved := store.GetScopedGroupAnnouncementBlock("frontend-a", "announcement-a")
-	if saved == nil || saved.ChatType != "group" || saved.ChatID != "chat-1" || saved.BotName != "bot-a" || saved.BlockID != "block-a" || saved.Marker != "marker-a" || saved.LastContentHash != "hash-a" {
+	if saved == nil || saved.ChatType != "group" || saved.ChatID != "chat-1" || saved.BotOpenID != "bot-a" || saved.BlockID != "block-a" || saved.Marker != "marker-a" || saved.LastContentHash != "hash-a" {
 		t.Fatalf("saved announcement block = %+v", saved)
 	}
 	if saved.CreatedAt == 0 || saved.UpdatedAt == 0 {

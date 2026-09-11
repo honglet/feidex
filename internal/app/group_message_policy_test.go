@@ -24,7 +24,7 @@ func TestGroupMessagePolicyRoutesPrimaryMentionsAndReplies(t *testing.T) {
 		cfg:        cfg,
 		store:      store,
 		frontendID: "frontend-a",
-		feishu:     wrapFeishuClient(&fakeFeishuClient{botOpenID: "bot-a-open", botName: "bot-a"}),
+		feishu:     wrapFeishuClient(&fakeFeishuClient{botOpenID: "bot-a-open"}),
 	}
 	if err := a.State().SaveAgentBinding(&state.AgentBinding{
 		ID:       "binding-primary",
@@ -119,7 +119,7 @@ func TestGroupMessagePolicyKeepsNonPrimaryRepliesLocal(t *testing.T) {
 		t.Fatalf("state.Open() error = %v", err)
 	}
 	cfg := config.Default()
-	a := &App{cfg: cfg, store: store, frontendID: "frontend-b", feishu: wrapFeishuClient(&fakeFeishuClient{botOpenID: "bot-b-open", botName: "bot-b"})}
+	a := &App{cfg: cfg, store: store, frontendID: "frontend-b", feishu: wrapFeishuClient(&fakeFeishuClient{botOpenID: "bot-b-open"})}
 	if err := a.State().SaveAgentBinding(&state.AgentBinding{
 		ID:       "binding-client",
 		ChatID:   "chat-1",
@@ -128,7 +128,7 @@ func TestGroupMessagePolicyKeepsNonPrimaryRepliesLocal(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SaveAgentBinding() error = %v", err)
 	}
-	if _, err := setGroupPrimaryOwner(a, "group", "chat-1", "bot-a"); err != nil {
+	if _, err := setGroupPrimaryOwner(a, "group", "chat-1", "bot-a-open"); err != nil {
 		t.Fatalf("setGroupPrimaryOwner() error = %v", err)
 	}
 	if shouldAcceptGroupMessage(a, "chat-1", "", "", false, false) {
@@ -166,23 +166,23 @@ func TestGroupMessagePolicyDeliversUnknownTopLevelForPrimaryAutoInit(t *testing.
 	if shouldDeliverGroupMessageToApp(a, feishu.GroupMessagePolicyInput{ChatID: "chat-new", RootMessageID: "root-1", ParentMessageID: "parent-1"}) {
 		t.Fatal("adapter policy delivered unrelated reply for primary init")
 	}
-	if shouldDeliverGroupMessageToApp(a, feishu.GroupMessagePolicyInput{ChatID: "chat-new", Text: "@bot-other hello", MentionedOpenIDs: []string{"bot-other"}, MentionedNames: []string{"bot-other"}}) {
+	if shouldDeliverGroupMessageToApp(a, feishu.GroupMessagePolicyInput{ChatID: "chat-new", Text: "@bot-other hello", MentionedOpenIDs: []string{"bot-other"}}) {
 		t.Fatal("adapter policy delivered explicit mention of another bot for primary init")
 	}
 	if shouldDeliverGroupMessageToApp(a, feishu.GroupMessagePolicyInput{ChatID: "chat-new", Text: "@unknown hello", MentionedAny: true}) {
 		t.Fatal("adapter policy delivered mention event without current bot mention")
 	}
-	if !shouldDeliverGroupMessageToApp(a, feishu.GroupMessagePolicyInput{ChatID: "chat-new", Text: "@bot-b /primary on", MentionedOpenIDs: []string{"bot-b-open"}, MentionedNames: []string{"bot-b"}}) {
+	if !shouldDeliverGroupMessageToApp(a, feishu.GroupMessagePolicyInput{ChatID: "chat-new", Text: "@bot-b /primary on", MentionedOpenIDs: []string{"bot-b-open"}}) {
 		t.Fatal("adapter policy rejected explicit primary owner assignment")
 	}
-	if shouldDeliverGroupMessageToApp(a, feishu.GroupMessagePolicyInput{ChatID: "chat-new", Text: "@bot-b", MentionedOpenIDs: []string{"bot-b-open"}, MentionedNames: []string{"bot-b"}}) {
+	if shouldDeliverGroupMessageToApp(a, feishu.GroupMessagePolicyInput{ChatID: "chat-new", Text: "@bot-b", MentionedOpenIDs: []string{"bot-b-open"}}) {
 		t.Fatal("adapter policy delivered mention-only primary owner assignment")
 	}
-	if shouldDeliverGroupMessageToApp(a, feishu.GroupMessagePolicyInput{ChatID: "chat-new", Text: "@bot-b hello", MentionedOpenIDs: []string{"bot-b-open"}, MentionedNames: []string{"bot-b"}}) {
+	if shouldDeliverGroupMessageToApp(a, feishu.GroupMessagePolicyInput{ChatID: "chat-new", Text: "@bot-b hello", MentionedOpenIDs: []string{"bot-b-open"}}) {
 		t.Fatal("adapter policy delivered ordinary explicit mention of another bot")
 	}
 
-	if _, err := setGroupPrimaryOwner(a, "group", "chat-new", "bot-other"); err != nil {
+	if _, err := setGroupPrimaryOwner(a, "group", "chat-new", "bot-other-open"); err != nil {
 		t.Fatalf("setGroupPrimaryOwner(other) error = %v", err)
 	}
 	if shouldDeliverGroupMessageToApp(a, feishu.GroupMessagePolicyInput{ChatID: "chat-new"}) {
@@ -232,7 +232,6 @@ func TestPrimaryBindingHandlesUnmentionedSlashCommand(t *testing.T) {
 		t.Fatalf("SaveAgentBinding() error = %v", err)
 	}
 	ff.botOpenID = "bot-a-open"
-	ff.botName = "bot-a"
 	if _, err := setGroupPrimary(a, "group", "chat-slash", true); err != nil {
 		t.Fatalf("setGroupPrimary(chat-slash) error = %v", err)
 	}

@@ -154,13 +154,13 @@ func (s bindingService) commandPrimary(msg *feishu.InboundMessage, args []string
 		return fmt.Errorf("/primary 只能在群聊中使用")
 	}
 	_, initErr := ensureGroupPrimaryInitialized(context.Background(), s.app, msg.ChatType, msg.ChatID)
-	ownerName := groupPrimaryOwnerName(s.app, msg.ChatType, msg.ChatID)
+	ownerOpenID := groupPrimaryOwnerOpenID(s.app, msg.ChatType, msg.ChatID)
 	if initErr != nil {
-		ownerName = groupPrimaryOwnerName(s.app, msg.ChatType, msg.ChatID)
+		ownerOpenID = groupPrimaryOwnerOpenID(s.app, msg.ChatType, msg.ChatID)
 	}
 	if len(args) == 0 || strings.EqualFold(strings.TrimSpace(args[0]), "status") {
 		body := "当前 Bot primary: `" + onOffLabel(isGroupPrimary(s.app, msg.ChatType, msg.ChatID)) + "`"
-		body += "\nowner bot: `" + groupPrimaryOwnerBotDisplayName(ownerName) + "`"
+		body += "\nowner bot: `" + groupPrimaryOwnerBotDisplayName(s.app, ownerOpenID) + "`"
 		if self := currentBotDisplayName(s.app); self != "" {
 			body += "\n当前 Bot: `" + self + "`"
 		}
@@ -172,22 +172,19 @@ func (s bindingService) commandPrimary(msg *feishu.InboundMessage, args []string
 	if len(args) != 1 || !strings.EqualFold(strings.TrimSpace(args[0]), "on") {
 		return fmt.Errorf("usage: /primary on")
 	}
-	if len(msg.MentionedNames) > 1 {
-		return fmt.Errorf("请只 @ 一个机器人来设置 primary")
-	}
-	targetName := currentBotName(s.app)
-	return s.setPrimaryOwnerForMessage(msg, targetName)
+	targetOpenID := currentOrMentionedBotOpenID(s.app, msg)
+	return s.setPrimaryOwnerForMessage(msg, targetOpenID)
 }
 
-func (s bindingService) setPrimaryOwnerForMessage(msg *feishu.InboundMessage, targetName string) error {
+func (s bindingService) setPrimaryOwnerForMessage(msg *feishu.InboundMessage, targetOpenID string) error {
 	if msg == nil {
 		return nil
 	}
-	targetName = strings.TrimSpace(targetName)
-	if targetName == "" {
-		return fmt.Errorf("bot name is required to set group primary")
+	targetOpenID = strings.TrimSpace(targetOpenID)
+	if targetOpenID == "" {
+		return fmt.Errorf("bot open_id is required to set group primary")
 	}
-	updated, err := setGroupPrimaryOwner(s.app, msg.ChatType, msg.ChatID, targetName)
+	updated, err := setGroupPrimaryOwner(s.app, msg.ChatType, msg.ChatID, targetOpenID)
 	if err != nil {
 		return err
 	}
@@ -196,7 +193,7 @@ func (s bindingService) setPrimaryOwnerForMessage(msg *feishu.InboundMessage, ta
 	}
 	body := "已更新 primary: `" + onOffLabel(isGroupPrimary(s.app, msg.ChatType, msg.ChatID)) + "`"
 	if updated != nil {
-		body += "\nowner bot: `" + groupPrimaryOwnerBotDisplayName(updated.OwnerBotName) + "`"
+		body += "\nowner bot: `" + groupPrimaryOwnerBotDisplayName(s.app, updated.OwnerBotOpenID) + "`"
 		scheduleGroupAnnouncementStatusRefresh(s.app, updated.ChatID, "primary_updated")
 	}
 	return s.replyBindingUpdated(msg, body)

@@ -632,6 +632,12 @@ func (f *fakeFeishuClient) UpdateAnnouncementTextBlock(_ context.Context, chatID
 	return nil
 }
 
+func (f *fakeFeishuClient) BotOpenID() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return strings.TrimSpace(f.botOpenID)
+}
+
 func (f *fakeFeishuClient) BotName() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -874,7 +880,7 @@ func newTestApp(t *testing.T) (*App, *fakeFeishuClient, *fakeCodexClient) {
 	if err != nil {
 		t.Fatalf("Open(store) error = %v", err)
 	}
-	ff := &fakeFeishuClient{botOpenID: "bot-open", botName: "test-feidex"}
+	ff := &fakeFeishuClient{botOpenID: "bot-open"}
 	fc := &fakeCodexClient{}
 	var asyncWG sync.WaitGroup
 	a := &App{

@@ -45,7 +45,6 @@ type InboundMessage struct {
 	MergeForwardMessageIDs []string
 	ExpandedMergeForward   bool
 	MentionedOpenIDs       []string
-	MentionedNames         []string
 	MentionedAny           bool
 	MentionedSelf          bool
 	CreatedAt              int64
@@ -60,7 +59,6 @@ type GroupMessagePolicyInput struct {
 	ParentMessageID  string
 	Text             string
 	MentionedOpenIDs []string
-	MentionedNames   []string
 	MentionedAny     bool
 	MentionedSelf    bool
 }
@@ -228,6 +226,14 @@ func (a *Adapter) SetGroupMessagePolicy(policy GroupMessagePolicy) {
 		return
 	}
 	a.groupMessagePolicy = policy
+}
+
+// BotOpenID returns this app bot's OpenID once it has been discovered during startup.
+func (a *Adapter) BotOpenID() string {
+	if a == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.ensureBotProfile("bot_open_id").OpenID)
 }
 
 // BotName returns this app bot's Feishu display name once discovered during startup.
@@ -1205,13 +1211,12 @@ func (a *Adapter) convertMessage(event *larkim.P2MessageReceiveV1) *InboundMessa
 	policyRootMessageID := groupPolicyRootMessageID(messageID, rootMessageID, parentMessageID)
 	mentionedSelf := a.botOpenID != "" && mentioned(msg.Mentions, a.botOpenID)
 	mentionedOpenIDs := mentionedOpenIDs(msg.Mentions)
-	mentionedNames := mentionedNames(msg.Mentions)
 	mentionedAny := hasMentionEvents(msg.Mentions)
 	rawText := ""
 	if messageType == "text" {
 		rawText = extractText(msg.Content)
 	}
-	synthesizedPrimaryCommand := messageType == "text" && mentionOnlyPrimaryOnCommand(rawText, msg.Mentions, mentionedNames)
+	synthesizedPrimaryCommand := messageType == "text" && mentionOnlyPrimaryOnCommand(rawText, msg.Mentions, mentionedOpenIDs)
 	effectiveText := rawText
 	if synthesizedPrimaryCommand {
 		effectiveText = "/primary on"
@@ -1226,7 +1231,6 @@ func (a *Adapter) convertMessage(event *larkim.P2MessageReceiveV1) *InboundMessa
 				ParentMessageID:  parentMessageID,
 				Text:             effectiveText,
 				MentionedOpenIDs: mentionedOpenIDs,
-				MentionedNames:   mentionedNames,
 				MentionedAny:     mentionedAny,
 				MentionedSelf:    mentionedSelf,
 			}) {
@@ -1242,7 +1246,6 @@ func (a *Adapter) convertMessage(event *larkim.P2MessageReceiveV1) *InboundMessa
 		RootMessageID:    rootMessageID,
 		ParentMessageID:  parentMessageID,
 		MentionedOpenIDs: mentionedOpenIDs,
-		MentionedNames:   mentionedNames,
 		MentionedAny:     mentionedAny,
 		MentionedSelf:    mentionedSelf,
 	}
@@ -1781,8 +1784,8 @@ func stripBotMention(text string, mentions []*larkim.MentionEvent, botOpenID str
 	return strings.TrimSpace(text)
 }
 
-func mentionOnlyPrimaryOnCommand(text string, mentions []*larkim.MentionEvent, mentionedNames []string) bool {
-	if len(mentionedNames) != 1 || strings.TrimSpace(mentionedNames[0]) == "" {
+func mentionOnlyPrimaryOnCommand(text string, mentions []*larkim.MentionEvent, mentionedOpenIDs []string) bool {
+	if len(mentionedOpenIDs) != 1 {
 		return false
 	}
 	if strings.TrimSpace(text) == "" {
@@ -1807,16 +1810,6 @@ func mentioned(mentions []*larkim.MentionEvent, botOpenID string) bool {
 		}
 	}
 	return false
-}
-
-func mentionedNames(mentions []*larkim.MentionEvent) []string {
-	names := make([]string, 0, len(mentions))
-	for _, mention := range mentions {
-		if mention != nil {
-			names = append(names, strings.TrimSpace(stringValue(mention.Name)))
-		}
-	}
-	return names
 }
 
 func mentionedOpenIDs(mentions []*larkim.MentionEvent) []string {

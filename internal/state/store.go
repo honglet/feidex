@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const currentSnapshotVersion = 11
+const currentSnapshotVersion = 10
 
 type Store struct {
 	path    string
@@ -119,16 +119,16 @@ type BotProfile struct {
 	UpdatedAt            int64  `json:"updated_at"`
 }
 
-// GroupPrimary stores the bot name that owns unmentioned messages in one
+// GroupPrimary stores the bot OpenID that owns unmentioned messages in one
 // Feishu group. It is intentionally separate from AgentBinding, which only
 // owns local workspace/runtime configuration.
 type GroupPrimary struct {
-	ID           string `json:"id"`
-	ChatID       string `json:"chat_id"`
-	ChatType     string `json:"chat_type"`
-	OwnerBotName string `json:"owner_bot_name,omitempty"`
-	CreatedAt    int64  `json:"created_at"`
-	UpdatedAt    int64  `json:"updated_at"`
+	ID             string `json:"id"`
+	ChatID         string `json:"chat_id"`
+	ChatType       string `json:"chat_type"`
+	OwnerBotOpenID string `json:"owner_bot_open_id,omitempty"`
+	CreatedAt      int64  `json:"created_at"`
+	UpdatedAt      int64  `json:"updated_at"`
 }
 
 // GroupAnnouncementBlock stores the Feishu upgraded group announcement block
@@ -138,7 +138,7 @@ type GroupAnnouncementBlock struct {
 	FrontendID      string `json:"frontend_id"`
 	ChatID          string `json:"chat_id"`
 	ChatType        string `json:"chat_type"`
-	BotName         string `json:"bot_name,omitempty"`
+	BotOpenID       string `json:"bot_open_id,omitempty"`
 	BlockID         string `json:"block_id,omitempty"`
 	Marker          string `json:"marker,omitempty"`
 	LastContentHash string `json:"last_content_hash,omitempty"`
@@ -165,7 +165,6 @@ type AgentBindingPendingMessage struct {
 	MergeForwardMessageIDs []string                        `json:"merge_forward_message_ids,omitempty"`
 	ExpandedMergeForward   bool                            `json:"expanded_merge_forward,omitempty"`
 	MentionedOpenIDs       []string                        `json:"mentioned_open_ids,omitempty"`
-	MentionedNames         []string                        `json:"mentioned_names,omitempty"`
 	MentionedAny           bool                            `json:"mentioned_any,omitempty"`
 	MentionedSelf          bool                            `json:"mentioned_self,omitempty"`
 	CreatedAt              int64                           `json:"created_at,omitempty"`
@@ -361,16 +360,6 @@ func Open(path string) (*Store, error) {
 	}
 	rewrite := s.data.Version != currentSnapshotVersion
 	s.data.Version = currentSnapshotVersion
-	if loaded.Version < 11 {
-		// The old ownership IDs cannot be translated reliably across bot apps.
-		// Keep block IDs so refresh can replace existing regions in place.
-		for _, block := range s.data.GroupAnnouncementBlocks {
-			if block != nil {
-				block.Marker = ""
-				block.LastContentHash = ""
-			}
-		}
-	}
 	normalizedBindings := normalizeAgentBindings(s.data.AgentBindings)
 	if normalizedBindings == nil {
 		normalizedBindings = map[string]*AgentBinding{}
@@ -1178,7 +1167,6 @@ func cloneAgentBindingPendingMessage(msg *AgentBindingPendingMessage) *AgentBind
 	cp.Attachments = append([]AgentBindingPendingAttachment(nil), msg.Attachments...)
 	cp.MergeForwardMessageIDs = append([]string(nil), msg.MergeForwardMessageIDs...)
 	cp.MentionedOpenIDs = append([]string(nil), msg.MentionedOpenIDs...)
-	cp.MentionedNames = append([]string(nil), msg.MentionedNames...)
 	return &cp
 }
 
@@ -1306,7 +1294,7 @@ func normalizeGroupPrimaryValues(primary *GroupPrimary) bool {
 	primary.ID = strings.TrimSpace(primary.ID)
 	primary.ChatID = strings.TrimSpace(primary.ChatID)
 	primary.ChatType = strings.ToLower(strings.TrimSpace(primary.ChatType))
-	primary.OwnerBotName = strings.TrimSpace(primary.OwnerBotName)
+	primary.OwnerBotOpenID = strings.TrimSpace(primary.OwnerBotOpenID)
 	if primary.UpdatedAt == 0 && primary.CreatedAt != 0 {
 		primary.UpdatedAt = primary.CreatedAt
 	}
@@ -1330,9 +1318,6 @@ func normalizeAgentBindingPendingMessage(msg *AgentBindingPendingMessage) *Agent
 	cp.ThreadID = strings.TrimSpace(cp.ThreadID)
 	cp.MergeForwardMessageIDs = normalizeStringSlice(cp.MergeForwardMessageIDs)
 	cp.MentionedOpenIDs = normalizeStringSlice(cp.MentionedOpenIDs)
-	for i := range cp.MentionedNames {
-		cp.MentionedNames[i] = strings.TrimSpace(cp.MentionedNames[i])
-	}
 	attachments := make([]AgentBindingPendingAttachment, 0, len(cp.Attachments))
 	for _, attachment := range cp.Attachments {
 		attachment.Kind = strings.TrimSpace(attachment.Kind)
