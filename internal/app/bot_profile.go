@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
+	"feidex/internal/app/modelconfig"
 	"feidex/internal/config"
 	"feidex/internal/feishu"
 	"feidex/internal/state"
@@ -111,22 +113,46 @@ func commandModelProfileAware(a *App, msg *feishu.InboundMessage, args []string)
 		return newBackendConfigurationService(a).handleBackendModelCommand(msg, args)
 	}
 	if strings.EqualFold(strings.TrimSpace(args[0]), "set") && len(args) == 2 {
+		backend := configuredBackend(a)
+		value := clearableArg(args[1])
+		if backend != config.RuntimeBackendClaude {
+			if value != "" {
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				result, err := newModelConfigService(a).fetchModelList(ctx)
+				cancel()
+				if err != nil {
+					return err
+				}
+				if modelconfig.LookupModelEntry(result, value) == nil {
+					return fmt.Errorf("未找到 model: %s", value)
+				}
+			}
+			_, sess, ws := currentWorkspaceForMessage(a, msg)
+			workspaceID := ""
+			if ws != nil {
+				workspaceID = ws.ID
+			} else if sess != nil {
+				workspaceID = strings.TrimSpace(sess.WorkspaceID)
+			}
+			if workspaceID != "" {
+				settings := a.BotWorkspaceSettings(workspaceID)
+				if settings == nil {
+					settings = &state.BotWorkspaceSettings{WorkspaceID: workspaceID}
+				}
+				settings.Model = value
+				if err := a.SaveBotWorkspaceSettings(settings); err != nil {
+					return err
+				}
+				return a.feishu.ReplyText(context.Background(), msg.MessageID, "已更新当前 Bot 在该 workspace 的模型: "+renderOptionalBacktick(value), replyInThreadEnabled(a, msg.ChatType))
+			}
+		}
 		if err := newBackendConfigurationService(a).handleBackendModelCommand(msg, args); err != nil {
 			return err
 		}
-		backend := configuredBackend(a)
-		value := clearableArg(args[1])
-		_, err := updateBotProfile(a, func(profile *state.BotProfile) {
-			if backend == config.RuntimeBackendClaude {
-				profile.ClaudeModel = value
-			} else {
-				profile.Model = value
-			}
-		})
-		if err != nil {
-			return err
-		}
 		return nil
+	}
+	if strings.EqualFold(strings.TrimSpace(args[0]), "set") {
+		return fmt.Errorf("usage: /model set MODEL|default")
 	}
 	// Keep plan/option subcommands on their existing configuration handlers;
 	// those are backend catalog settings rather than Conversation runtime state.
@@ -142,6 +168,8 @@ func commandEffortProfileAware(a *App, msg *feishu.InboundMessage, args []string
 	}
 	if len(args) == 1 {
 		if err := newModelConfigService(a).commandEffort(msg, args); err != nil {
+			// commandEffort validates the value and renders the standard response;
+			// persistence below is scoped to the selected workspace for Codex.
 			return err
 		}
 		value := clearableArg(args[0])
@@ -200,17 +228,51 @@ func effectiveBotProfile(a *App) *state.BotProfile {
 }
 
 func completeBotProfileModelSet(a *App, action *feishu.CardAction, modelID string) (*callback.CardActionTriggerResponse, error) {
-	var resp *callback.CardActionTriggerResponse
-	var err error
-	if configuredBackend(a) == config.RuntimeBackendClaude {
-		resp, err = newBackendConfigurationService(a).completeGlobalModelSet(action, modelID)
-	} else {
-		resp, err = newBackendConfigurationService(a).completeGlobalModelSet(action, modelID)
+	value := clearableArg(modelID)
+	if configuredBackend(a) != config.RuntimeBackendClaude {
+		if value != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			result, fetchErr := newModelConfigService(a).fetchModelList(ctx)
+			cancel()
+			if fetchErr != nil {
+				return nil, fetchErr
+			}
+			if modelconfig.LookupModelEntry(result, value) == nil {
+				return &callback.CardActionTriggerResponse{Toast: &callback.Toast{Type: "error", Content: "未找到 model: " + value}}, nil
+			}
+		}
+		sessionKey := actionSessionKey(action)
+		sess := a.State().Session(sessionKey)
+		var ws *config.Workspace
+		if sess != nil {
+			ws = config.FindWorkspace(a.cfg, sess.WorkspaceID)
+		}
+		if ws != nil {
+			settings := a.BotWorkspaceSettings(ws.ID)
+			if settings == nil {
+				settings = &state.BotWorkspaceSettings{WorkspaceID: ws.ID}
+			}
+			settings.Model = value
+			if err := a.SaveBotWorkspaceSettings(settings); err != nil {
+				return nil, err
+			}
+			return renderBotWorkspaceModelResponse(a, action, sessionKey, value)
+		} else if sess != nil && strings.TrimSpace(sess.WorkspaceID) != "" {
+			settings := a.BotWorkspaceSettings(sess.WorkspaceID)
+			if settings == nil {
+				settings = &state.BotWorkspaceSettings{WorkspaceID: sess.WorkspaceID}
+			}
+			settings.Model = value
+			if err := a.SaveBotWorkspaceSettings(settings); err != nil {
+				return nil, err
+			}
+			return renderBotWorkspaceModelResponse(a, action, sessionKey, value)
+		}
 	}
+	resp, err := newBackendConfigurationService(a).completeGlobalModelSet(action, modelID)
 	if err != nil || resp == nil || (resp.Toast != nil && strings.EqualFold(resp.Toast.Type, "error")) {
 		return resp, err
 	}
-	value := clearableArg(modelID)
 	_, err = updateBotProfile(a, func(profile *state.BotProfile) {
 		if configuredBackend(a) == config.RuntimeBackendClaude {
 			profile.ClaudeModel = value
@@ -219,6 +281,25 @@ func completeBotProfileModelSet(a *App, action *feishu.CardAction, modelID strin
 		}
 	})
 	return resp, err
+}
+
+// renderBotWorkspaceModelResponse validates/render-refreshes the Codex model
+// card without mutating global or frontend-wide configuration. P2P Codex model
+// changes are scoped to the currently selected workspace.
+func renderBotWorkspaceModelResponse(a *App, action *feishu.CardAction, sessionKey, modelID string) (*callback.CardActionTriggerResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	result, err := newModelConfigService(a).fetchModelList(ctx)
+	if err != nil {
+		return &callback.CardActionTriggerResponse{Toast: &callback.Toast{Type: "error", Content: err.Error()}}, nil
+	}
+	if strings.TrimSpace(modelID) != "" && modelconfig.LookupModelEntry(result, strings.TrimSpace(modelID)) == nil {
+		return &callback.CardActionTriggerResponse{Toast: &callback.Toast{Type: "error", Content: "未找到 model: " + strings.TrimSpace(modelID)}}, nil
+	}
+	return &callback.CardActionTriggerResponse{
+		Toast: &callback.Toast{Type: "success", Content: "已更新当前 Bot 在该 workspace 的模型"},
+		Card:  rawCard(newModelConfigService(a).renderModelConfigCard(result, nil, sessionKey, actionStringValue(action, "menu_action"))),
+	}, nil
 }
 
 func completeBotProfileEffortSet(a *App, action *feishu.CardAction, effort string) (*callback.CardActionTriggerResponse, error) {

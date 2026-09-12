@@ -27,6 +27,7 @@ type Snapshot struct {
 	Sessions                  map[string]*storedSession             `json:"sessions"`
 	AgentBindings             map[string]*AgentBinding              `json:"agent_bindings,omitempty"`
 	BotProfiles               map[string]*BotProfile                `json:"bot_profiles,omitempty"`
+	BotWorkspaceSettings      map[string]*BotWorkspaceSettings      `json:"bot_workspace_settings,omitempty"`
 	GroupPrimaries            map[string]*GroupPrimary              `json:"group_primaries,omitempty"`
 	GroupAnnouncementBlocks   map[string]*GroupAnnouncementBlock    `json:"group_announcement_blocks,omitempty"`
 	FrontendCardNotifications map[string][]FrontendCardNotification `json:"frontend_card_notifications,omitempty"`
@@ -117,6 +118,19 @@ type BotProfile struct {
 	ClaudePermissionMode string `json:"claude_permission_mode,omitempty"`
 	CreatedAt            int64  `json:"created_at"`
 	UpdatedAt            int64  `json:"updated_at"`
+}
+
+// BotWorkspaceSettings stores model settings for one frontend in one workspace.
+// The key is intentionally composite so two bots can share a workspace safely.
+type BotWorkspaceSettings struct {
+	ID                  string `json:"id"`
+	FrontendID          string `json:"frontend_id"`
+	WorkspaceID         string `json:"workspace_id"`
+	Model               string `json:"model,omitempty"`
+	ReasoningEffort     string `json:"reasoning_effort,omitempty"`
+	PlanModel           string `json:"plan_model,omitempty"`
+	PlanReasoningEffort string `json:"plan_reasoning_effort,omitempty"`
+	UpdatedAt           int64  `json:"updated_at"`
 }
 
 // GroupPrimary stores one frontend's local primary setting for a Feishu group.
@@ -361,6 +375,9 @@ func Open(path string) (*Store, error) {
 	if s.data.BotProfiles == nil {
 		s.data.BotProfiles = map[string]*BotProfile{}
 	}
+	if s.data.BotWorkspaceSettings == nil {
+		s.data.BotWorkspaceSettings = map[string]*BotWorkspaceSettings{}
+	}
 	rewrite := s.data.Version != currentSnapshotVersion
 	s.data.Version = currentSnapshotVersion
 	normalizedBindings := normalizeAgentBindings(s.data.AgentBindings)
@@ -379,6 +396,14 @@ func Open(path string) (*Store, error) {
 		rewrite = true
 	}
 	s.data.BotProfiles = normalizedProfiles
+	normalizedWorkspaceSettings := normalizeBotWorkspaceSettings(s.data.BotWorkspaceSettings)
+	if normalizedWorkspaceSettings == nil {
+		normalizedWorkspaceSettings = map[string]*BotWorkspaceSettings{}
+	}
+	if !botWorkspaceSettingsEqual(s.data.BotWorkspaceSettings, normalizedWorkspaceSettings) {
+		rewrite = true
+	}
+	s.data.BotWorkspaceSettings = normalizedWorkspaceSettings
 	normalizedPrimaries := normalizeGroupPrimaries(s.data.GroupPrimaries)
 	if normalizedPrimaries == nil {
 		normalizedPrimaries = map[string]*GroupPrimary{}
@@ -409,6 +434,50 @@ func Open(path string) (*Store, error) {
 		}
 	}
 	return s, nil
+}
+
+func normalizeBotWorkspaceSettings(input map[string]*BotWorkspaceSettings) map[string]*BotWorkspaceSettings {
+	if input == nil {
+		return map[string]*BotWorkspaceSettings{}
+	}
+	out := make(map[string]*BotWorkspaceSettings, len(input))
+	for _, settings := range input {
+		if settings == nil {
+			continue
+		}
+		cp := cloneBotWorkspaceSettings(settings)
+		cp.FrontendID = strings.TrimSpace(cp.FrontendID)
+		cp.WorkspaceID = strings.TrimSpace(cp.WorkspaceID)
+		if cp.FrontendID == "" || cp.WorkspaceID == "" {
+			continue
+		}
+		cp.ID = "bot-workspace-" + sanitizeStateIDPart(cp.FrontendID) + "-" + sanitizeStateIDPart(cp.WorkspaceID)
+		cp.Model = strings.TrimSpace(cp.Model)
+		cp.ReasoningEffort = strings.TrimSpace(cp.ReasoningEffort)
+		cp.PlanModel = strings.TrimSpace(cp.PlanModel)
+		cp.PlanReasoningEffort = strings.TrimSpace(cp.PlanReasoningEffort)
+		out[botWorkspaceSettingsKey(cp.FrontendID, cp.WorkspaceID)] = cp
+	}
+	return out
+}
+
+func botWorkspaceSettingsEqual(a, b map[string]*BotWorkspaceSettings) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, left := range a {
+		right := b[key]
+		if left == nil || right == nil {
+			if left != right {
+				return false
+			}
+			continue
+		}
+		if *left != *right {
+			return false
+		}
+	}
+	return true
 }
 
 // GetAgentBinding returns a binding by id without frontend filtering.
@@ -603,6 +672,54 @@ func (s *Store) DeleteBotProfile(frontendID string) error {
 		return nil
 	}
 	return s.saveLocked()
+}
+
+func botWorkspaceSettingsKey(frontendID, workspaceID string) string {
+	return strings.TrimSpace(frontendID) + "\x00" + strings.TrimSpace(workspaceID)
+}
+
+// GetBotWorkspaceSettings returns settings scoped to one bot and workspace.
+func (s *Store) GetBotWorkspaceSettings(frontendID, workspaceID string) *BotWorkspaceSettings {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneBotWorkspaceSettings(s.data.BotWorkspaceSettings[botWorkspaceSettingsKey(frontendID, workspaceID)])
+}
+
+// UpsertBotWorkspaceSettings persists settings scoped to one bot and workspace.
+func (s *Store) UpsertBotWorkspaceSettings(settings *BotWorkspaceSettings) error {
+	if s == nil || settings == nil {
+		return nil
+	}
+	cp := cloneBotWorkspaceSettings(settings)
+	cp.FrontendID = strings.TrimSpace(cp.FrontendID)
+	cp.WorkspaceID = strings.TrimSpace(cp.WorkspaceID)
+	if cp.FrontendID == "" || cp.WorkspaceID == "" {
+		return fmt.Errorf("frontend and workspace are required")
+	}
+	cp.ID = "bot-workspace-" + sanitizeStateIDPart(cp.FrontendID) + "-" + sanitizeStateIDPart(cp.WorkspaceID)
+	cp.Model = strings.TrimSpace(cp.Model)
+	cp.ReasoningEffort = strings.TrimSpace(cp.ReasoningEffort)
+	cp.PlanModel = strings.TrimSpace(cp.PlanModel)
+	cp.PlanReasoningEffort = strings.TrimSpace(cp.PlanReasoningEffort)
+	cp.UpdatedAt = time.Now().Unix()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.data.BotWorkspaceSettings == nil {
+		s.data.BotWorkspaceSettings = map[string]*BotWorkspaceSettings{}
+	}
+	s.data.BotWorkspaceSettings[botWorkspaceSettingsKey(cp.FrontendID, cp.WorkspaceID)] = cp
+	return s.saveLocked()
+}
+
+func cloneBotWorkspaceSettings(settings *BotWorkspaceSettings) *BotWorkspaceSettings {
+	if settings == nil {
+		return nil
+	}
+	cp := *settings
+	return &cp
 }
 
 // DeleteAgentBinding deletes a persisted binding by id.

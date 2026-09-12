@@ -24,37 +24,41 @@ import (
 )
 
 type App struct {
-	cfg                    *config.Config
-	cfgPath                string
-	store                  *state.Store
-	frontendID             string
-	frontendConfigIndex    int
-	configMu               sync.RWMutex
-	sharedConfigMu         *sync.RWMutex
-	backend                string
-	codexProfile           string
-	codexHome              string
-	codex                  CodexClient
-	claude                 ClaudeCore
-	feishu                 FeishuClient
-	started                time.Time
-	deduper                *inboundDeduper
-	backendSwitchMu        sync.Mutex
-	backendStateMu         sync.Mutex
-	asyncRunner            func(func())
-	waitAsync              func()
-	codexRuntimeMu         sync.Mutex
-	codexRecovering        bool
-	codexRecoverySource    CodexClient
-	codexAutoThreadMu      sync.Mutex
-	codexAutoThreading     bool
-	autoRetries            *autoRetryTracker
-	frontendRecoveryMu     sync.Mutex
-	frontendTrafficMu      sync.Mutex
-	frontendMessageTraffic int
-	backendSwitching       bool
-	backendSwitchTarget    string
-	mcp                    *feidexMCPService
+	cfg                         *config.Config
+	cfgPath                     string
+	store                       *state.Store
+	frontendID                  string
+	frontendConfigIndex         int
+	configMu                    sync.RWMutex
+	sharedConfigMu              *sync.RWMutex
+	backend                     string
+	codexProfile                string
+	codexHome                   string
+	frontendModel               string
+	frontendReasoningEffort     string
+	frontendPlanModel           string
+	frontendPlanReasoningEffort string
+	codex                       CodexClient
+	claude                      ClaudeCore
+	feishu                      FeishuClient
+	started                     time.Time
+	deduper                     *inboundDeduper
+	backendSwitchMu             sync.Mutex
+	backendStateMu              sync.Mutex
+	asyncRunner                 func(func())
+	waitAsync                   func()
+	codexRuntimeMu              sync.Mutex
+	codexRecovering             bool
+	codexRecoverySource         CodexClient
+	codexAutoThreadMu           sync.Mutex
+	codexAutoThreading          bool
+	autoRetries                 *autoRetryTracker
+	frontendRecoveryMu          sync.Mutex
+	frontendTrafficMu           sync.Mutex
+	frontendMessageTraffic      int
+	backendSwitching            bool
+	backendSwitchTarget         string
+	mcp                         *feidexMCPService
 
 	liveThreads *liveThreadTracker
 
@@ -112,19 +116,23 @@ func newFrontendApp(cfg *config.Config, cfgPath string, store *state.Store, fron
 	backend := normalizeRuntimeBackend(frontend.Backend)
 	FeishuClient := wrapFeishuClient(newFeishuClient(frontend.Feishu))
 	app := &App{
-		cfg:                 cfg,
-		cfgPath:             cfgPath,
-		store:               store,
-		frontendID:          strings.TrimSpace(frontend.ID),
-		frontendConfigIndex: frontend.ConfigIndex,
-		backend:             backend,
-		codexProfile:        strings.TrimSpace(frontend.CodexProfile),
-		codexHome:           strings.TrimSpace(frontend.CodexHome),
-		feishu:              FeishuClient,
-		started:             time.Now(),
-		deduper:             newInboundDeduper(),
-		liveThreads:         newLiveThreadTracker(),
-		autoRetries:         newAutoRetryTracker(),
+		cfg:                         cfg,
+		cfgPath:                     cfgPath,
+		store:                       store,
+		frontendID:                  strings.TrimSpace(frontend.ID),
+		frontendConfigIndex:         frontend.ConfigIndex,
+		backend:                     backend,
+		codexProfile:                strings.TrimSpace(frontend.CodexProfile),
+		codexHome:                   strings.TrimSpace(frontend.CodexHome),
+		frontendModel:               strings.TrimSpace(frontend.Model),
+		frontendReasoningEffort:     strings.TrimSpace(frontend.ReasoningEffort),
+		frontendPlanModel:           strings.TrimSpace(frontend.PlanModel),
+		frontendPlanReasoningEffort: strings.TrimSpace(frontend.PlanReasoningEffort),
+		feishu:                      FeishuClient,
+		started:                     time.Now(),
+		deduper:                     newInboundDeduper(),
+		liveThreads:                 newLiveThreadTracker(),
+		autoRetries:                 newAutoRetryTracker(),
 		trackers: appTrackers{
 			turnStreams:        newTurnStreamTracker(),
 			turnItems:          newTurnItemTracker(),

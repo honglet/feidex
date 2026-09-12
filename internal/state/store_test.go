@@ -78,6 +78,35 @@ func TestOpenCreatesDefaultSnapshotAndFile(t *testing.T) {
 	}
 }
 
+func TestBotWorkspaceSettingsScopedByFrontendAndWorkspaceAndPersisted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, settings := range []*BotWorkspaceSettings{
+		{FrontendID: "bot-a", WorkspaceID: "shared", Model: "model-a"},
+		{FrontendID: "bot-b", WorkspaceID: "shared", Model: "model-b"},
+	} {
+		if err := store.UpsertBotWorkspaceSettings(settings); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := store.GetBotWorkspaceSettings("bot-a", "shared"); got == nil || got.Model != "model-a" {
+		t.Fatalf("bot-a settings = %+v", got)
+	}
+	if got := store.GetBotWorkspaceSettings("bot-b", "shared"); got == nil || got.Model != "model-b" {
+		t.Fatalf("bot-b settings = %+v", got)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reopened.GetBotWorkspaceSettings("bot-a", "shared"); got == nil || got.Model != "model-a" {
+		t.Fatalf("reopened bot-a settings = %+v", got)
+	}
+}
+
 func TestOpenHandlesEmptyLegacyAndInvalidFiles(t *testing.T) {
 	dir := t.TempDir()
 

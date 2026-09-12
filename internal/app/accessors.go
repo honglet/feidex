@@ -40,6 +40,18 @@ func (a *App) EffectiveCodexConfig() *config.Config {
 	defer a.configMu.RUnlock()
 	copyCfg := *a.cfg
 	copyCfg.Codex = a.cfg.Codex
+	if strings.TrimSpace(a.frontendModel) != "" {
+		copyCfg.Codex.Model = strings.TrimSpace(a.frontendModel)
+	}
+	if strings.TrimSpace(a.frontendReasoningEffort) != "" {
+		copyCfg.Codex.ReasoningEffort = strings.TrimSpace(a.frontendReasoningEffort)
+	}
+	if strings.TrimSpace(a.frontendPlanModel) != "" {
+		copyCfg.Codex.PlanModel = strings.TrimSpace(a.frontendPlanModel)
+	}
+	if strings.TrimSpace(a.frontendPlanReasoningEffort) != "" {
+		copyCfg.Codex.PlanReasoningEffort = strings.TrimSpace(a.frontendPlanReasoningEffort)
+	}
 	if strings.TrimSpace(a.codexProfile) == "" {
 		return &copyCfg
 	}
@@ -47,18 +59,18 @@ func (a *App) EffectiveCodexConfig() *config.Config {
 	if err != nil {
 		return &copyCfg
 	}
-	if strings.TrimSpace(profile.Model) != "" {
+	if strings.TrimSpace(a.frontendModel) == "" && strings.TrimSpace(profile.Model) != "" {
 		copyCfg.Codex.Model = profile.Model
 	}
-	if strings.TrimSpace(profile.ReasoningEffort) != "" {
+	if strings.TrimSpace(a.frontendReasoningEffort) == "" && strings.TrimSpace(profile.ReasoningEffort) != "" {
 		copyCfg.Codex.ReasoningEffort = profile.ReasoningEffort
 	}
-	if strings.TrimSpace(profile.PlanModel) != "" {
+	if strings.TrimSpace(a.frontendPlanModel) == "" && strings.TrimSpace(profile.PlanModel) != "" {
 		copyCfg.Codex.PlanModel = profile.PlanModel
-	} else if strings.TrimSpace(profile.Model) != "" {
+	} else if strings.TrimSpace(a.frontendPlanModel) == "" && strings.TrimSpace(profile.Model) != "" {
 		copyCfg.Codex.PlanModel = profile.Model
 	}
-	if strings.TrimSpace(profile.PlanReasoningEffort) != "" {
+	if strings.TrimSpace(a.frontendPlanReasoningEffort) == "" && strings.TrimSpace(profile.PlanReasoningEffort) != "" {
 		copyCfg.Codex.PlanReasoningEffort = profile.PlanReasoningEffort
 	}
 	return &copyCfg
@@ -70,6 +82,21 @@ func (a *App) CodexProfile() string {
 		return ""
 	}
 	return strings.TrimSpace(a.codexProfile)
+}
+
+// FrontendDefaultModel returns the frontend's configured model, including its
+// Codex profile model when one is configured.
+func (a *App) FrontendDefaultModel() string {
+	if a == nil {
+		return ""
+	}
+	if model := strings.TrimSpace(a.frontendModel); model != "" {
+		return model
+	}
+	if profile, err := config.LoadCodexProfile(a.codexHome, a.codexProfile); err == nil && strings.TrimSpace(profile.Model) != "" {
+		return strings.TrimSpace(profile.Model)
+	}
+	return strings.TrimSpace(a.frontendModel)
 }
 
 // Store returns the state store.
@@ -151,6 +178,23 @@ func (a *App) AgentBindingsForChat(chatType, chatID string) []*state.AgentBindin
 		return nil
 	}
 	return st.AgentBindingsForChat(chatType, chatID)
+}
+
+// BotWorkspaceSettings returns persisted settings for this frontend/workspace.
+func (a *App) BotWorkspaceSettings(workspaceID string) *state.BotWorkspaceSettings {
+	if a == nil || a.store == nil {
+		return nil
+	}
+	return a.store.GetBotWorkspaceSettings(a.frontendID, workspaceID)
+}
+
+// SaveBotWorkspaceSettings persists settings for this frontend/workspace.
+func (a *App) SaveBotWorkspaceSettings(settings *state.BotWorkspaceSettings) error {
+	if a == nil || a.store == nil || settings == nil {
+		return nil
+	}
+	settings.FrontendID = a.frontendID
+	return a.store.UpsertBotWorkspaceSettings(settings)
 }
 
 // ConfigPath returns the filesystem path to the configuration file.

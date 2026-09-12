@@ -555,6 +555,16 @@ func (s ConfigurationService) RenderCodexStatusBody(sess *state.Session) string 
 	if effort == "" {
 		effort = "(follow model default)"
 	}
+	effectiveModel := model
+	effectiveSource := "frontend/global default"
+	if provider, ok := s.App.(interface {
+		EffectiveCodexModelForSession(*state.Session, *config.Workspace) (string, string)
+	}); ok {
+		if selected, source := provider.EffectiveCodexModelForSession(sess, ws); strings.TrimSpace(selected) != "" {
+			effectiveModel = strings.TrimSpace(selected)
+			effectiveSource = firstNonEmpty(strings.TrimSpace(source), effectiveSource)
+		}
+	}
 	feishuCfg := appcore.FeishuConfig(s.App)
 	lines := []string{
 		"状态: `" + status + "`",
@@ -565,6 +575,7 @@ func (s ConfigurationService) RenderCodexStatusBody(sess *state.Session) string 
 		"线程: " + conversationLabel,
 		"thread_id: `" + conversationID + "`",
 		"Bot 默认模型: `" + model + "`",
+		"当前生效模型: `" + effectiveModel + "`（来源: " + effectiveSource + "）",
 		"Bot 默认推理强度: `" + effort + "`",
 		"auto retry: `" + map[bool]string{true: "on", false: "off"}[autoRetryEnabled(s.App)] + "`",
 		"quiet: `" + appquietmode.StatusText(appquietmode.Mode(feishuCfg)) + "`",

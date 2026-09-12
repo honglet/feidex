@@ -46,19 +46,27 @@ type FeishuConfig struct {
 }
 
 type FrontendConfig struct {
-	ID           string `toml:"id"`
-	CodexProfile string `toml:"codex_profile"`
-	CodexHome    string `toml:"codex_home"`
+	ID                  string `toml:"id"`
+	CodexProfile        string `toml:"codex_profile"`
+	CodexHome           string `toml:"codex_home"`
+	Model               string `toml:"model"`
+	ReasoningEffort     string `toml:"reasoning_effort"`
+	PlanModel           string `toml:"plan_model"`
+	PlanReasoningEffort string `toml:"plan_reasoning_effort"`
 	FeishuConfig
 }
 
 type ResolvedFrontend struct {
-	ID           string
-	Backend      string
-	CodexProfile string
-	CodexHome    string
-	Feishu       FeishuConfig
-	ConfigIndex  int
+	ID                  string
+	Backend             string
+	CodexProfile        string
+	CodexHome           string
+	Model               string
+	ReasoningEffort     string
+	PlanModel           string
+	PlanReasoningEffort string
+	Feishu              FeishuConfig
+	ConfigIndex         int
 }
 
 type CodexConfig struct {
@@ -494,12 +502,16 @@ func (c *Config) ResolvedFrontends() []ResolvedFrontend {
 		frontend := c.Frontends[i]
 		frontend.FeishuConfig.Backend = normalizeBackendName(frontend.FeishuConfig.Backend)
 		out = append(out, ResolvedFrontend{
-			ID:           strings.TrimSpace(frontend.ID),
-			Backend:      frontend.FeishuConfig.Backend,
-			CodexProfile: strings.TrimSpace(frontend.CodexProfile),
-			CodexHome:    strings.TrimSpace(frontend.CodexHome),
-			Feishu:       frontend.FeishuConfig,
-			ConfigIndex:  i,
+			ID:                  strings.TrimSpace(frontend.ID),
+			Backend:             frontend.FeishuConfig.Backend,
+			CodexProfile:        strings.TrimSpace(frontend.CodexProfile),
+			CodexHome:           strings.TrimSpace(frontend.CodexHome),
+			Model:               strings.TrimSpace(frontend.Model),
+			ReasoningEffort:     strings.TrimSpace(frontend.ReasoningEffort),
+			PlanModel:           strings.TrimSpace(frontend.PlanModel),
+			PlanReasoningEffort: strings.TrimSpace(frontend.PlanReasoningEffort),
+			Feishu:              frontend.FeishuConfig,
+			ConfigIndex:         i,
 		})
 	}
 	return out

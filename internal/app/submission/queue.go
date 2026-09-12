@@ -92,6 +92,10 @@ type botProfileResolver interface {
 	SubmissionQueueBotProfile() *state.BotProfile
 }
 
+type botWorkspaceSettingsResolver interface {
+	SubmissionQueueBotWorkspaceSettings(string) *state.BotWorkspaceSettings
+}
+
 // ---------------------------------------------------------------------------
 // Narrow provider interfaces
 // ---------------------------------------------------------------------------
@@ -439,15 +443,22 @@ func submissionBinding(a App, sess *state.Session, sub *state.Submission) *state
 
 func effectiveCodexModel(a App, sess *state.Session, sub *state.Submission, ws *config.Workspace) string {
 	binding := submissionBinding(a, sess, sub)
+	workspaceModel := ""
+	if provider, ok := a.(botWorkspaceSettingsResolver); ok && ws != nil {
+		if settings := provider.SubmissionQueueBotWorkspaceSettings(ws.ID); settings != nil {
+			workspaceModel = strings.TrimSpace(settings.Model)
+		}
+	}
 	return firstNonEmpty(
 		sessionModelOverride(sess),
 		bindingModelOverride(binding),
+		workspaceModel,
 		botProfileModel(a),
 		configuredCodexModel(a),
 	)
 }
 
-func effectiveCodexReasoningEffort(a App, sess *state.Session, sub *state.Submission) string {
+func effectiveCodexReasoningEffort(a App, sess *state.Session, sub *state.Submission, _ *config.Workspace) string {
 	binding := submissionBinding(a, sess, sub)
 	return firstNonEmpty(
 		bindingReasoningEffortOverride(binding),
@@ -1066,7 +1077,7 @@ func (s SubmissionQueueService) StartNextCodexSubmissionWithFailureNotice(sessio
 		sessionctx.ClearThreadContext(sess)
 	}
 	effectiveModel := effectiveCodexModel(a, sess, sub, ws)
-	effectiveReasoningEffort := effectiveCodexReasoningEffort(a, sess, sub)
+	effectiveReasoningEffort := effectiveCodexReasoningEffort(a, sess, sub, ws)
 	effectiveApprovalPolicy := effectiveBindingApprovalPolicy(a, sess, sub, ws)
 	effectiveSandboxMode := effectiveBindingSandboxMode(a, sess, sub, ws)
 	effectiveServiceTier := effectiveBindingServiceTier(a, sess, sub)

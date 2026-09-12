@@ -90,6 +90,9 @@ func (a submissionAppAdapter) SubmissionQueueAgentBindingByID(id string) *state.
 func (a submissionAppAdapter) SubmissionQueueBotProfile() *state.BotProfile {
 	return a.app.State().BotProfile()
 }
+func (a submissionAppAdapter) SubmissionQueueBotWorkspaceSettings(workspaceID string) *state.BotWorkspaceSettings {
+	return a.app.BotWorkspaceSettings(workspaceID)
+}
 func (a submissionAppAdapter) SubmissionQueueWorkspace(id string) *config.Workspace {
 	return config.FindWorkspace(a.app.cfg, id)
 }
@@ -186,7 +189,7 @@ func (a submissionAppAdapter) SubmissionQueueConfiguredClaudeModel() string {
 	return strings.TrimSpace(a.app.cfg.Claude.Model)
 }
 func (a submissionAppAdapter) SubmissionQueueConfiguredCodexModel() string {
-	return strings.TrimSpace(a.app.cfg.Codex.Model)
+	return strings.TrimSpace(a.app.FrontendDefaultModel())
 }
 func (a submissionAppAdapter) SubmissionQueueConfiguredCodexReasoningEffort() string {
 	return strings.TrimSpace(a.app.cfg.Codex.ReasoningEffort)

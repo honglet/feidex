@@ -8,18 +8,49 @@ import (
 	"feidex/internal/state"
 )
 
+// EffectiveModel describes the model selected for a request and the layer
+// that supplied it. Source is intended for status/workspace-switch notices.
+type EffectiveModel struct {
+	ID     string
+	Source string
+}
+
 func effectiveBindingForSession(a *App, sess *state.Session) *state.AgentBinding {
 	return agentBindingForSession(a, sess)
 }
 
 func effectiveCodexModel(a *App, sess *state.Session, ws *config.Workspace) string {
+	return effectiveCodexModelInfo(a, sess, ws).ID
+}
+
+func effectiveCodexModelInfo(a *App, sess *state.Session, ws *config.Workspace) EffectiveModel {
 	binding := effectiveBindingForSession(a, sess)
-	return firstNonEmpty(
-		strings.TrimSpace(sessionModelOverride(sess)),
-		strings.TrimSpace(bindingModelOverride(binding)),
-		botProfileModelForApp(a),
-		configuredGlobalModel(a.cfg),
-	)
+	workspaceModel := ""
+	if ws != nil {
+		if settings := a.BotWorkspaceSettings(ws.ID); settings != nil {
+			workspaceModel = strings.TrimSpace(settings.Model)
+		}
+	}
+	for _, candidate := range []struct{ id, source string }{
+		{strings.TrimSpace(sessionModelOverride(sess)), "session/thread override"},
+		{strings.TrimSpace(bindingModelOverride(binding)), "group override"},
+		{workspaceModel, "bot/workspace setting"},
+		{botProfileModelForApp(a), "bot profile"},
+		{a.FrontendDefaultModel(), "frontend default"},
+		{configuredGlobalModel(a.cfg), "global default"},
+	} {
+		if candidate.id != "" {
+			return EffectiveModel{ID: candidate.id, Source: candidate.source}
+		}
+	}
+	return EffectiveModel{}
+}
+
+// EffectiveCodexModelForSession exposes the effective model and source to
+// workspace/configuration subpackages without importing the root app package.
+func (a *App) EffectiveCodexModelForSession(sess *state.Session, ws *config.Workspace) (string, string) {
+	info := effectiveCodexModelInfo(a, sess, ws)
+	return info.ID, info.Source
 }
 
 func effectiveCodexReasoningEffort(a *App, sess *state.Session) string {

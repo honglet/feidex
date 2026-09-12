@@ -65,3 +65,24 @@ func TestEffectiveModelUsesSessionBindingThenBotDefault(t *testing.T) {
 		t.Fatalf("effectiveClaudeModel() = %q, want bot default", got)
 	}
 }
+
+func TestEffectiveCodexModelUsesBotWorkspaceSettingBeforeProfile(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.frontendID = "bot-a"
+	a.cfg.Codex.Model = "global"
+	ws := &config.Workspace{ID: "shared", Cwd: t.TempDir()}
+	if err := a.SaveBotWorkspaceSettings(&state.BotWorkspaceSettings{WorkspaceID: ws.ID, Model: "workspace-model"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.State().SaveBotProfile(&state.BotProfile{FrontendID: "bot-a", Model: "profile-model"}); err != nil {
+		t.Fatal(err)
+	}
+	sess := &state.Session{WorkspaceID: ws.ID}
+	if got := effectiveCodexModel(a, sess, ws); got != "workspace-model" {
+		t.Fatalf("effective model = %q, want workspace-model", got)
+	}
+	sess.ModelOverride = "session-model"
+	if got := effectiveCodexModel(a, sess, ws); got != "session-model" {
+		t.Fatalf("effective model = %q, want session-model", got)
+	}
+}

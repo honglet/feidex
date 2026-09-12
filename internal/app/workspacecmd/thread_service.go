@@ -287,6 +287,12 @@ func (s *ThreadService) StartCodexWorkspaceThread(sessionKey string, sess *state
 }
 
 func (s *ThreadService) effectiveCodexModel(sess *state.Session, ws *config.Workspace) string {
+	if provider, ok := s.App.(interface {
+		EffectiveCodexModelForSession(*state.Session, *config.Workspace) (string, string)
+	}); ok {
+		model, _ := provider.EffectiveCodexModelForSession(sess, ws)
+		return strings.TrimSpace(model)
+	}
 	binding := s.agentBindingForSession(sess)
 	profileModel := ""
 	if provider, ok := s.App.(interface{ BotProfile() *state.BotProfile }); ok {

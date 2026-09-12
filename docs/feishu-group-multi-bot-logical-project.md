@@ -275,9 +275,9 @@ effective-value 优先级：
 ```text
 Session / Thread 临时覆盖
   > 当前 Bot 在当前群内的覆盖
-  > 当前 Bot 的 BotProfile
-  > Workspace 默认配置
-  > frontend / 全局默认配置
+  > 当前 Bot 在当前 workspace 的模型记忆
+  > 当前 Bot 的 BotProfile / frontend 默认
+  > Workspace 与全局默认配置
 ```
 
 上面的 `BotProfile` 回退只适用于运行参数。群 Conversation 的 workspace 仍必须先在当前群内完成选择或创建，不能因为 BotProfile 已配置 workspace 就跳过群级 onboarding。

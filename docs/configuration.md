@@ -185,6 +185,13 @@ Claude Code 后端配置：
 - `backend`
   - 后端选择：`"codex"` 或 `"claude"`
   - 留空则在启动时弹出交互式选择卡片
+- `model`
+  - 该 frontend 的 Codex 初始模型；私聊中通过 `/model set` 选择的模型会按 workspace 单独记忆
+- `reasoning_effort`
+  - 该 frontend 的 Codex 初始推理强度
+- `plan_model` / `plan_reasoning_effort`
+  - 该 frontend 的 Codex Plan 模式初始模型和推理强度
+- 模型运行时优先级为：当前 session/thread 覆盖 > 群内 Bot 覆盖 > 当前 Bot 在当前 workspace 的记忆 > BotProfile/frontend 默认 > 全局默认。workspace 记忆按 `(frontend, workspace)` 保存，因此多个 Bot 可共享目录而使用不同模型；重启后仍保留。
 - `app_id` / `app_secret`
   - 该前端的飞书应用凭据
 - `allow_from` / `debug_allow_from` 等

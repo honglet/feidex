@@ -153,9 +153,30 @@ func (s *ConfigService) CommandWorkspace(msg *feishu.InboundMessage, args []stri
 			return s.App.Feishu().ReplyText(context.Background(), msg.MessageID, reply, appcore.ReplyInThreadEnabled(s.App, msg.ChatType))
 		}
 		reply += s.BackendWorkspaceSwitchBindingNotice(binding)
+		reply += s.workspaceModelNotice(sess, ws)
 		return s.App.Feishu().ReplyText(context.Background(), msg.MessageID, reply, appcore.ReplyInThreadEnabled(s.App, msg.ChatType))
 	}
 	return fmt.Errorf("usage: %s", s.BackendWorkspaceCommandUsage())
+}
+
+func (s *ConfigService) workspaceModelNotice(sess *state.Session, ws *config.Workspace) string {
+	if s == nil || s.App == nil || ws == nil {
+		return ""
+	}
+	if provider, ok := s.App.(interface {
+		EffectiveCodexModelForSession(*state.Session, *config.Workspace) (string, string)
+	}); ok {
+		model, source := provider.EffectiveCodexModelForSession(sess, ws)
+		model = strings.TrimSpace(model)
+		source = strings.TrimSpace(source)
+		if model != "" {
+			if source != "" {
+				return "。当前模型: `" + model + "`（来源: " + source + "）"
+			}
+			return "。当前模型: `" + model + "`"
+		}
+	}
+	return ""
 }
 
 // ShowWorkspaceMenu shows the workspace management menu.
