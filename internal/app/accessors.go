@@ -99,6 +99,15 @@ func (a *App) FrontendDefaultModel() string {
 	return strings.TrimSpace(a.frontendModel)
 }
 
+// FrontendModel returns the explicit model configured on this frontend. It
+// does not inspect Codex profiles, making it safe for Claude frontends too.
+func (a *App) FrontendModel() string {
+	if a == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.frontendModel)
+}
+
 // Store returns the state store.
 func (a *App) Store() *state.Store {
 	if a == nil {

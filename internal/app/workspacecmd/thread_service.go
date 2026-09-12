@@ -316,10 +316,15 @@ func (s *ThreadService) effectiveClaudeModel(sess *state.Session, ws *config.Wor
 			profileModel = strings.TrimSpace(profile.ClaudeModel)
 		}
 	}
+	frontendModel := ""
+	if provider, ok := s.App.(interface{ FrontendModel() string }); ok {
+		frontendModel = strings.TrimSpace(provider.FrontendModel())
+	}
 	return appcore.FirstNonEmpty(
 		strings.TrimSpace(sessionModelOverride(sess)),
 		strings.TrimSpace(bindingModelOverride(binding)),
 		profileModel,
+		frontendModel,
 		strings.TrimSpace(s.App.Config().Claude.Model),
 	)
 }

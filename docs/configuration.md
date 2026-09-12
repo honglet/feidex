@@ -186,7 +186,7 @@ Claude Code 后端配置：
   - 后端选择：`"codex"` 或 `"claude"`
   - 留空则在启动时弹出交互式选择卡片
 - `model`
-  - 该 frontend 的 Codex 初始模型；私聊中通过 `/model set` 选择的模型会按 workspace 单独记忆
+  - 该 frontend 所选 backend 的初始模型（Codex 或 Claude）；私聊中通过 `/model set` 选择的模型会按 workspace 单独记忆
 - `reasoning_effort`
   - 该 frontend 的 Codex 初始推理强度
 - `plan_model` / `plan_reasoning_effort`

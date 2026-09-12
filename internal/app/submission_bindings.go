@@ -188,6 +188,9 @@ func (a submissionAppAdapter) SubmissionQueueClaudeClient() appsubmission.QueueC
 func (a submissionAppAdapter) SubmissionQueueConfiguredClaudeModel() string {
 	return strings.TrimSpace(a.app.cfg.Claude.Model)
 }
+func (a submissionAppAdapter) SubmissionQueueFrontendModel() string {
+	return strings.TrimSpace(a.app.FrontendModel())
+}
 func (a submissionAppAdapter) SubmissionQueueConfiguredCodexModel() string {
 	return strings.TrimSpace(a.app.FrontendDefaultModel())
 }

@@ -507,6 +507,9 @@ func (s ConfigurationService) RenderClaudeStatusBody(sess *state.Session) string
 	cfg := s.App.Config()
 	ws = config.FindWorkspace(cfg, workspaceID)
 	model := firstNonEmpty(appmodelconfig.ConfiguredClaudeModel(cfg), appmodelconfig.ClaudeDefaultModelAlias)
+	if provider, ok := s.App.(interface{ FrontendModel() string }); ok {
+		model = firstNonEmpty(strings.TrimSpace(provider.FrontendModel()), model)
+	}
 	effort := firstNonEmpty(appmodelconfig.ConfiguredClaudeEffort(cfg), "(follow Claude default)")
 	feishuCfg := appcore.FeishuConfig(s.App)
 	lines := []string{

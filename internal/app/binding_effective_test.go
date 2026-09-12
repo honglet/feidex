@@ -86,3 +86,15 @@ func TestEffectiveCodexModelUsesBotWorkspaceSettingBeforeProfile(t *testing.T) {
 		t.Fatalf("effective model = %q, want session-model", got)
 	}
 }
+
+func TestEffectiveClaudeModelUsesFrontendModelBeforeGlobalClaudeModel(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.frontendID = "claude-main"
+	a.frontendModel = "deepseek-v4-pro"
+	a.cfg.Claude.Model = "claude-opus-5"
+	sess := &state.Session{WorkspaceID: "default"}
+	ws := &config.Workspace{ID: "default", Cwd: t.TempDir()}
+	if got := effectiveClaudeModel(a, sess, ws); got != "deepseek-v4-pro" {
+		t.Fatalf("effective Claude model = %q, want frontend model", got)
+	}
+}

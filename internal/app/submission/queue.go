@@ -96,6 +96,10 @@ type botWorkspaceSettingsResolver interface {
 	SubmissionQueueBotWorkspaceSettings(string) *state.BotWorkspaceSettings
 }
 
+type frontendModelResolver interface {
+	SubmissionQueueFrontendModel() string
+}
+
 // ---------------------------------------------------------------------------
 // Narrow provider interfaces
 // ---------------------------------------------------------------------------
@@ -469,10 +473,15 @@ func effectiveCodexReasoningEffort(a App, sess *state.Session, sub *state.Submis
 
 func effectiveClaudeModel(a App, sess *state.Session, sub *state.Submission, ws *config.Workspace) string {
 	binding := submissionBinding(a, sess, sub)
+	frontendModel := ""
+	if provider, ok := a.(frontendModelResolver); ok {
+		frontendModel = strings.TrimSpace(provider.SubmissionQueueFrontendModel())
+	}
 	return firstNonEmpty(
 		sessionModelOverride(sess),
 		bindingModelOverride(binding),
 		botProfileClaudeModel(a),
+		frontendModel,
 		configuredClaudeModel(a),
 	)
 }

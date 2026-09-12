@@ -68,6 +68,7 @@ func effectiveClaudeModel(a *App, sess *state.Session, ws *config.Workspace) str
 		strings.TrimSpace(sessionModelOverride(sess)),
 		strings.TrimSpace(bindingModelOverride(binding)),
 		botProfileClaudeModelForApp(a),
+		a.FrontendModel(),
 		strings.TrimSpace(a.cfg.Claude.Model),
 	)
 }
