@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -620,4 +621,198 @@ func containsAll(text string, parts ...string) bool {
 		}
 	}
 	return true
+}
+
+func TestStopPreventsLateFailureFromRestartingRetry(t *testing.T) {
+	for _, existingLoop := range []bool{false, true} {
+		for _, missingCompletion := range []bool{false, true} {
+			t.Run(fmt.Sprintf("loop_%t_missing_completion_%t", existingLoop, missingCompletion), func(t *testing.T) {
+				a, _, fc := newTestApp(t)
+				retry := newAutoRetryService(a)
+				if err := retry.UpdateAutoRetryEnabled(true); err != nil {
+					t.Fatal(err)
+				}
+				scheduled := 0
+				retry.AutoRetryTracker().After = func(_ time.Duration, fn func()) delayedTask { scheduled++; return &fakeDelayedTask{fn: fn} }
+				msg := &feishu.InboundMessage{ChatID: "chat-1", ChatType: "group", MessageID: "stop", UserID: "user-1"}
+				key := makeSessionKey(a, msg)
+				seedActiveSubmission(t, a, key, "thread-1", "turn-1")
+				if existingLoop {
+					retry.AutoRetryTracker().States[key] = &autoRetryState{SessionKey: key, ThreadID: "thread-1", RetryCount: 1, TimerSeq: 7}
+				}
+				fc.callHook = func(_ context.Context, method string, _ any, out any) error {
+					switch method {
+					case "turn/interrupt":
+						if missingCompletion {
+							return errors.New("no active turn to interrupt")
+						}
+						return nil
+					case "thread/read":
+						result := out.(*codexrpc.ThreadReadResult)
+						result.Thread.ID = "thread-1"
+						result.Thread.Turns = []codexrpc.ThreadReadTurn{{ID: "turn-1", Status: "failed"}}
+						return nil
+					default:
+						t.Fatalf("unexpected backend call: %s", method)
+						return nil
+					}
+				}
+				if err := commandInterrupt(a, msg); err != nil {
+					t.Fatal(err)
+				}
+				if !missingCompletion {
+					if existingLoop {
+						retry.RunAutoRetryTimer(key, 7)
+					} // A late callback must preserve cancellation until terminal.
+					if sess := a.State().Session(key); sess.ActiveTurnID != "turn-1" {
+						t.Fatal("interrupt finalized before terminal notification")
+					}
+					finishTurn(a, "thread-1", "turn-1", "failed")
+				}
+				if scheduled != 0 {
+					t.Fatalf("stop resurrected %d retries", scheduled)
+				}
+				if _, ok := retry.CurrentAutoRetryState(key); ok {
+					t.Fatal("canceled retry not cleaned at terminal")
+				}
+				if sess := a.State().Session(key); sess.ActiveTurnID != "" {
+					t.Fatalf("terminal not finalized: %+v", sess)
+				}
+			})
+		}
+	}
+}
+
+func TestStopInvalidatesAlreadyDispatchedRetryCallback(t *testing.T) {
+	a, _, fc := newTestApp(t)
+	var callbacks []func()
+	a.asyncRunner = func(fn func()) { callbacks = append(callbacks, fn) }
+	retry := newAutoRetryService(a)
+	if err := retry.UpdateAutoRetryEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	var timers []*fakeDelayedTask
+	retry.AutoRetryTracker().After = func(_ time.Duration, fn func()) delayedTask {
+		timer := &fakeDelayedTask{fn: fn}
+		timers = append(timers, timer)
+		return timer
+	}
+	msg := &feishu.InboundMessage{ChatID: "chat-1", ChatType: "group", MessageID: "stop", UserID: "user-1"}
+	key := makeSessionKey(a, msg)
+	sess := seedAutoRetrySession(t, a, key, "thread-1")
+	markSessionThreadLive(a, key, "thread-1")
+	if !retry.ObserveAutoRetryTerminal(key, "thread-1", "failed", sess, nil, "") {
+		t.Fatal("retry not scheduled")
+	}
+	timers[0].fire() // Callback dispatched, but not run yet.
+	if err := commandInterrupt(a, msg); err != nil {
+		t.Fatal(err)
+	}
+	// A later independent task may fail and create a new loop for the same session.
+	if !retry.ObserveAutoRetryTerminal(key, "thread-1", "failed", sess, nil, "") {
+		t.Fatal("new retry not scheduled")
+	}
+	fc.callHook = func(_ context.Context, method string, _ any, _ any) error {
+		t.Fatalf("stale timer started %s", method)
+		return nil
+	}
+	callbacks[0]()
+	if !retry.HasPendingAutoRetry(key) || timers[1].stopped {
+		t.Fatal("stale callback consumed the new retry")
+	}
+	if err := commandInterrupt(a, msg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStopWaitsForRetryStartupAndInterruptsStartedTurn(t *testing.T) {
+	a, _, fc := newTestApp(t)
+	retry := newAutoRetryService(a)
+	if err := retry.UpdateAutoRetryEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	retry.AutoRetryTracker().After = func(_ time.Duration, fn func()) delayedTask { return &fakeDelayedTask{fn: fn} }
+	msg := &feishu.InboundMessage{ChatID: "chat-1", ChatType: "group", MessageID: "stop", UserID: "user-1"}
+	key := makeSessionKey(a, msg)
+	sess := seedAutoRetrySession(t, a, key, "thread-1")
+	markSessionThreadLive(a, key, "thread-1")
+	retry.ObserveAutoRetryTerminal(key, "thread-1", "failed", sess, nil, "")
+	snapshot, _ := retry.CurrentAutoRetryState(key)
+	starting, release, interrupted := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	fc.callHook = func(_ context.Context, method string, params any, out any) error {
+		switch method {
+		case "turn/start":
+			close(starting)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			out.(*codexrpc.TurnStartResult).Turn.ID = "turn-retry"
+			return nil
+		case "turn/interrupt":
+			if params.(map[string]any)["turnId"] != "turn-retry" {
+				return errors.New("interrupted wrong turn")
+			}
+			close(interrupted)
+			return nil
+		default:
+			return fmt.Errorf("unexpected method %s", method)
+		}
+	}
+	retryDone := make(chan struct{})
+	go func() { defer close(retryDone); retry.RunAutoRetryTimer(key, snapshot.TimerSeq) }()
+	select {
+	case <-starting:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- commandInterrupt(a, msg) }()
+	close(release)
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	select {
+	case <-interrupted:
+	default:
+		t.Fatal("stop missed retry startup")
+	}
+	<-retryDone
+	finishTurn(a, "thread-1", "turn-retry", "failed")
+	if retry.HasPendingAutoRetry(key) {
+		t.Fatal("stopped startup retried after failure")
+	}
+}
+
+func TestStopDoesNotFinalizeUnconfirmedTurnAfterInterruptError(t *testing.T) {
+	a, _, fc := newTestApp(t)
+	msg := &feishu.InboundMessage{ChatID: "chat-1", ChatType: "group", MessageID: "stop", UserID: "user-1"}
+	key := makeSessionKey(a, msg)
+	seedActiveSubmission(t, a, key, "thread-1", "turn-1")
+	interruptErr := errors.New("no active turn to interrupt")
+	fc.callHook = func(_ context.Context, method string, _ any, out any) error {
+		if method == "turn/interrupt" {
+			return interruptErr
+		}
+		if method == "thread/read" {
+			out.(*codexrpc.ThreadReadResult).Thread.Turns = []codexrpc.ThreadReadTurn{{ID: "turn-1", Status: "inProgress"}}
+			return nil
+		}
+		t.Fatalf("unexpected call %s", method)
+		return nil
+	}
+	if err := commandInterrupt(a, msg); !errors.Is(err, interruptErr) {
+		t.Fatalf("error = %v", err)
+	}
+	if sess := a.State().Session(key); sess.ActiveTurnID != "turn-1" {
+		t.Fatal("unconfirmed turn finalized")
+	}
 }

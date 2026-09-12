@@ -338,14 +338,20 @@ func (s Service) ScheduleAutoRetryAfterFailure(sessionKey, threadID string, upda
 		}
 		tracker.States[sessionKey] = st
 	}
-	st.Canceled = false
+	if st.Canceled {
+		// A late failed completion must consume the stop marker, never restart it.
+		delete(tracker.States, sessionKey)
+		tracker.Mu.Unlock()
+		return false
+	}
 	RefreshState(st, updatedSess, sub, threadID)
 	if strings.TrimSpace(st.StatusMessageID) == "" {
 		st.StatusMessageID = strings.TrimSpace(reuseMessageID)
 	}
 	if st.Timer == nil {
 		delay := DelayForStep(st.BackoffStep)
-		st.TimerSeq++
+		tracker.nextTimerSeq++
+		st.TimerSeq = tracker.nextTimerSeq
 		seq := st.TimerSeq
 		st.Timer = s.ScheduleDelayedTask(delay, func() {
 			s.app.RunAsync(func() {
@@ -370,11 +376,14 @@ func (s Service) RunAutoRetryTimer(sessionKey string, expectedSeq uint64) {
 		return
 	}
 
+	unlock := s.AutoRetryTracker().LockDispatch(sessionKey)
+	defer unlock()
+
 	var snapshot RetryState
 	tracker := s.AutoRetryTracker()
 	tracker.Mu.Lock()
 	st := tracker.States[sessionKey]
-	if st == nil || st.TimerSeq != expectedSeq {
+	if st == nil || st.Canceled || st.Timer == nil || st.TimerSeq != expectedSeq {
 		tracker.Mu.Unlock()
 		return
 	}
@@ -382,10 +391,6 @@ func (s Service) RunAutoRetryTimer(sessionKey string, expectedSeq uint64) {
 	snapshot = CloneState(st)
 	tracker.Mu.Unlock()
 
-	if snapshot.Canceled {
-		s.FinishAutoRetryWithMessage(sessionKey, "stopped", "已停止自动重试。")
-		return
-	}
 	if !s.AutoRetryEnabled() {
 		s.FinishAutoRetryWithMessage(sessionKey, "stopped", "自动重试已关闭。")
 		return
@@ -449,7 +454,8 @@ func (s Service) BumpAutoRetryBackoffAndReschedule(sessionKey, notice string) {
 	}
 	st.BackoffStep++
 	delay := DelayForStep(st.BackoffStep)
-	st.TimerSeq++
+	tracker.nextTimerSeq++
+	st.TimerSeq = tracker.nextTimerSeq
 	seq := st.TimerSeq
 	st.Timer = s.ScheduleDelayedTask(delay, func() {
 		s.app.RunAsync(func() {
@@ -550,6 +556,18 @@ func (s Service) CancelAutoRetry(sessionKey string, keepUntilTerminal bool, noti
 	tracker := s.AutoRetryTracker()
 	tracker.Mu.Lock()
 	st := tracker.States[sessionKey]
+	if st != nil && st.Canceled {
+		tracker.Mu.Unlock()
+		return false
+	}
+
+	if st == nil && keepUntilTerminal && s.AutoRetryEnabled() {
+		// Also guard the first failing turn, before it has created a retry loop.
+		if sess := s.app.AppState().Session(sessionKey); sess != nil && sess.ActiveThreadID != "" {
+			tracker.States[sessionKey] = &RetryState{SessionKey: sessionKey, ThreadID: sess.ActiveThreadID, Canceled: true}
+		}
+	}
+
 	if st != nil {
 		if st.Timer != nil {
 			st.Timer.Stop()

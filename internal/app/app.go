@@ -30,6 +30,7 @@ type App struct {
 	frontendID             string
 	frontendConfigIndex    int
 	configMu               sync.RWMutex
+	sharedConfigMu         *sync.RWMutex
 	backend                string
 	codexProfile           string
 	codexHome              string
@@ -59,6 +60,16 @@ type App struct {
 
 	serverRequestSvc *serverrequest.Service
 	trackers         appTrackers
+}
+
+func (a *App) configMutex() *sync.RWMutex {
+	if a == nil {
+		return nil
+	}
+	if a.sharedConfigMu != nil {
+		return a.sharedConfigMu
+	}
+	return &a.configMu
 }
 
 // appTrackers bundles per-service runtime trackers that are lazily initialized

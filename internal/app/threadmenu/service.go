@@ -67,6 +67,7 @@ type App interface {
 	SessionHasActiveWork(sess *state.Session) bool
 	// CancelAutoRetry cancels auto-retry for a session.
 	CancelAutoRetry(sessionKey string, keepUntilTerminal bool, notice string) bool
+	LockAutoRetryDispatch(sessionKey string) func()
 	// ReplyCommandActionResponse replies to a command message with a card action response.
 	ReplyCommandActionResponse(msg *feishu.InboundMessage, resp *callback.CardActionTriggerResponse) error
 	// CommandFork handles the /fork command.
@@ -719,18 +720,22 @@ func (s *Service) CommandSession(msg *feishu.InboundMessage, args []string) erro
 func (s *Service) CommandInterrupt(msg *feishu.InboundMessage) error {
 	sessionKey := appcore.MakeSessionKey(s.app, msg)
 	sessionKeys := s.interruptSurfaceSessionKeys(sessionKey)
+	sort.Strings(sessionKeys)
+	for _, key := range sessionKeys {
+		unlock := s.app.LockAutoRetryDispatch(key)
+		defer unlock()
+	}
 	discarded := s.discardInterruptSurfacePendingInputs(sessionKeys)
 	targetSessionKey, sess := s.interruptTargetSession(sessionKeys)
-	if runtime := s.app.ThreadMenuBackendRuntime(); runtime != nil && sess != nil {
-		sess = runtime.ReconcileCompletedTurnFromFinalOutput(targetSessionKey, sess)
-	}
-	if sess == nil {
-		targetSessionKey, sess = s.interruptTargetSession(sessionKeys)
-	}
-	if !interruptSessionActive(sess) {
-		targetSessionKey, sess = s.interruptTargetSession(sessionKeys)
-	}
 	canceledRetry := s.cancelInterruptSurfaceAutoRetry(sessionKeys, targetSessionKey, sess)
+	if runtime := s.app.ThreadMenuBackendRuntime(); runtime != nil && sess != nil {
+		runtime.ReconcileCompletedTurnFromFinalOutput(targetSessionKey, sess)
+	}
+	// Notifications may have completed the turn while cancellation cards were sent.
+	targetSessionKey, sess = s.interruptTargetSession(sessionKeys)
+	if s.cancelInterruptSurfaceAutoRetry(sessionKeys, targetSessionKey, sess) {
+		canceledRetry = true
+	}
 	if !interruptSessionActive(sess) {
 		if canceledRetry {
 			reply := "已停止当前 session 的自动重试。"

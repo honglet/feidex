@@ -236,6 +236,19 @@ func (a *Adapter) BotOpenID() string {
 	return strings.TrimSpace(a.ensureBotProfile("bot_open_id").OpenID)
 }
 
+// RefreshBotOpenID fetches this app's current bot OpenID from Feishu before
+// returning it. The cached value is used only as a fallback when Feishu is
+// temporarily unavailable; it is never read from application state.
+func (a *Adapter) RefreshBotOpenID() string {
+	if a == nil {
+		return ""
+	}
+	if profile := a.fetchBotProfile(); strings.TrimSpace(profile.OpenID) != "" {
+		return strings.TrimSpace(a.storeBotProfile(profile).OpenID)
+	}
+	return a.BotOpenID()
+}
+
 // BotName returns this app bot's Feishu display name once discovered during startup.
 func (a *Adapter) BotName() string {
 	if a == nil {

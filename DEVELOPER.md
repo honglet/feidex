@@ -331,6 +331,8 @@ If Feidex adds another backend, keep these rules:
 
 Important current assumptions:
 
+- Group primary is a frontend-scoped boolean for each group. Persist `GroupPrimary.Enabled` under a frontend-specific key; process `@Bot /primary on` and empty `@Bot` assignments on every frontend, setting `Enabled=true` only when the live Bot open_id matches the sole mention and `false` otherwise. Do not persist a shared owner identity or reuse another frontend's state.
+- `/stop` must cancel pending auto-retry timers as well as active turns. Serialize retry startup with stop per session; a canceled loop must not restart on a late failed completion. Preserve Codex terminal notification/history confirmation boundaries.
 - Feishu session identity is `frontend_id + chat_id`; chat type, user, root message, binding, workspace, and backend context stay as metadata.
 - Outbound message creation and patching are paced in `internal/feishu/message_rate_limit.go`.
 - New message creation is globally paced.

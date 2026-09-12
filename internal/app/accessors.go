@@ -192,7 +192,7 @@ func (a *App) ConfigMu() *sync.RWMutex {
 	if a == nil {
 		return nil
 	}
-	return &a.configMu
+	return a.configMutex()
 }
 
 // FrontendConfigIndex returns the active frontend configuration index.
@@ -208,8 +208,8 @@ func (a *App) SetBackend(backend string) {
 	if a == nil {
 		return
 	}
-	a.configMu.Lock()
-	defer a.configMu.Unlock()
+	a.configMutex().Lock()
+	defer a.configMutex().Unlock()
 	a.backend = appcore.NormalizeRuntimeBackend(backend)
 }
 

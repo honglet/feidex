@@ -155,3 +155,7 @@ type threadMenuWorkspaceConfigAdapter struct {
 func (a threadMenuWorkspaceConfigAdapter) CurrentThreadForMessage(msg *feishu.InboundMessage) (sessionKey string, sess *state.Session, ws *config.Workspace, threadID string, err error) {
 	return currentThreadForMessage(a.app, msg)
 }
+
+func (a *App) LockAutoRetryDispatch(sessionKey string) func() {
+	return a.AutoRetries().LockDispatch(sessionKey)
+}

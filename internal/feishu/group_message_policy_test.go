@@ -135,3 +135,45 @@ func TestConvertMessageSynthesizesEmptySelfMentionAsPrimaryCommand(t *testing.T)
 		t.Fatalf("convertMessage(empty self mention) = %+v, want synthesized primary command", got)
 	}
 }
+
+func TestConvertMessageSynthesizesEmptyOtherBotMentionForGroupPolicy(t *testing.T) {
+	a := New(config.FeishuConfig{})
+	a.botOpenID = "bot-self"
+	var captured GroupMessagePolicyInput
+	a.SetGroupMessagePolicy(func(input GroupMessagePolicyInput) bool {
+		captured = input
+		return input.Text == "/primary on"
+	})
+
+	msgType := "text"
+	chatType := "group"
+	messageID := "msg-empty-other-at"
+	chatID := "chat-empty-other-at"
+	userID := "user-1"
+	mentionKey := "@other-bot"
+	otherBotID := "bot-other"
+	content := `{"text":"@other-bot"}`
+
+	got := a.convertMessage(&larkim.P2MessageReceiveV1{
+		Event: &larkim.P2MessageReceiveV1Data{
+			Sender: &larkim.EventSender{SenderId: &larkim.UserId{OpenId: &userID}},
+			Message: &larkim.EventMessage{
+				MessageId:   &messageID,
+				ChatId:      &chatID,
+				ChatType:    &chatType,
+				MessageType: &msgType,
+				Content:     &content,
+				Mentions:    []*larkim.MentionEvent{{Key: &mentionKey, Id: &larkim.UserId{OpenId: &otherBotID}}},
+			},
+		},
+	})
+	if got == nil {
+		t.Fatal("convertMessage() returned nil for empty other-bot mention")
+	}
+	if got.Text != "/primary on" || got.MentionedSelf || len(got.MentionedOpenIDs) != 1 || got.MentionedOpenIDs[0] != otherBotID {
+		t.Fatalf("convertMessage(empty other-bot mention) = %+v, want synthesized primary handoff", got)
+	}
+	if captured.Text != "/primary on" || captured.MentionedSelf || len(captured.MentionedOpenIDs) != 1 || captured.MentionedOpenIDs[0] != otherBotID {
+		t.Fatalf("group policy input(empty other-bot mention) = %+v, want primary handoff", captured)
+	}
+}

@@ -23,14 +23,25 @@ type DelayedTask interface {
 
 // Tracker tracks auto-retry state by session key.
 type Tracker struct {
-	Mu     sync.Mutex
-	States map[string]*RetryState
-	After  func(time.Duration, func()) DelayedTask
+	Mu            sync.Mutex
+	States        map[string]*RetryState
+	After         func(time.Duration, func()) DelayedTask
+	nextTimerSeq  uint64
+	dispatchLocks sync.Map
 }
 
 // NewTracker creates a new auto-retry tracker.
 func NewTracker() *Tracker {
 	return &Tracker{States: map[string]*RetryState{}}
+}
+
+// LockDispatch serializes retry startup and /stop for a session. The tracker
+// mutex stays free while backend calls run, so terminal notifications can proceed.
+func (t *Tracker) LockDispatch(sessionKey string) func() {
+	value, _ := t.dispatchLocks.LoadOrStore(strings.TrimSpace(sessionKey), &sync.Mutex{})
+	mu := value.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 // RetryState holds the state for a single auto-retry operation.

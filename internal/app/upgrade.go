@@ -60,8 +60,8 @@ func newUpgradeServiceInner(app *App) appupgradecmd.UpgradeService {
 			return app.cfg.DataDir
 		},
 		DaemonNameFunc: func() string {
-			app.configMu.RLock()
-			defer app.configMu.RUnlock()
+			app.configMutex().RLock()
+			defer app.configMutex().RUnlock()
 			return strings.TrimSpace(app.cfg.Daemon.ServiceName)
 		},
 		MakeSessionKeyFunc: func(msg *feishu.InboundMessage) string {

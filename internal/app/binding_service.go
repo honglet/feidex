@@ -154,13 +154,8 @@ func (s bindingService) commandPrimary(msg *feishu.InboundMessage, args []string
 		return fmt.Errorf("/primary 只能在群聊中使用")
 	}
 	_, initErr := ensureGroupPrimaryInitialized(context.Background(), s.app, msg.ChatType, msg.ChatID)
-	ownerOpenID := groupPrimaryOwnerOpenID(s.app, msg.ChatType, msg.ChatID)
-	if initErr != nil {
-		ownerOpenID = groupPrimaryOwnerOpenID(s.app, msg.ChatType, msg.ChatID)
-	}
 	if len(args) == 0 || strings.EqualFold(strings.TrimSpace(args[0]), "status") {
 		body := "当前 Bot primary: `" + onOffLabel(isGroupPrimary(s.app, msg.ChatType, msg.ChatID)) + "`"
-		body += "\nowner bot: `" + groupPrimaryOwnerBotDisplayName(s.app, ownerOpenID) + "`"
 		if self := currentBotDisplayName(s.app); self != "" {
 			body += "\n当前 Bot: `" + self + "`"
 		}
@@ -172,19 +167,22 @@ func (s bindingService) commandPrimary(msg *feishu.InboundMessage, args []string
 	if len(args) != 1 || !strings.EqualFold(strings.TrimSpace(args[0]), "on") {
 		return fmt.Errorf("usage: /primary on")
 	}
-	targetOpenID := currentOrMentionedBotOpenID(s.app, msg)
-	return s.setPrimaryOwnerForMessage(msg, targetOpenID)
+	assignment, ok := groupPrimaryAssignmentForCommand(msg)
+	if !ok || strings.TrimSpace(currentLiveBotOpenID(s.app)) != assignment.TargetBotOpenID {
+		return fmt.Errorf("usage: /primary on（群内需要明确 @目标 Bot）")
+	}
+	return s.setPrimaryForMessage(msg)
 }
 
-func (s bindingService) setPrimaryOwnerForMessage(msg *feishu.InboundMessage, targetOpenID string) error {
+func (s bindingService) setPrimaryForMessage(msg *feishu.InboundMessage) error {
 	if msg == nil {
 		return nil
 	}
-	targetOpenID = strings.TrimSpace(targetOpenID)
-	if targetOpenID == "" {
+	currentOpenID := currentLiveBotOpenID(s.app)
+	if currentOpenID == "" {
 		return fmt.Errorf("bot open_id is required to set group primary")
 	}
-	updated, err := setGroupPrimaryOwner(s.app, msg.ChatType, msg.ChatID, targetOpenID)
+	updated, err := setGroupPrimaryState(s.app, msg.ChatType, msg.ChatID, true, msg)
 	if err != nil {
 		return err
 	}
@@ -193,7 +191,6 @@ func (s bindingService) setPrimaryOwnerForMessage(msg *feishu.InboundMessage, ta
 	}
 	body := "已更新 primary: `" + onOffLabel(isGroupPrimary(s.app, msg.ChatType, msg.ChatID)) + "`"
 	if updated != nil {
-		body += "\nowner bot: `" + groupPrimaryOwnerBotDisplayName(s.app, updated.OwnerBotOpenID) + "`"
 		scheduleGroupAnnouncementStatusRefresh(s.app, updated.ChatID, "primary_updated")
 	}
 	return s.replyBindingUpdated(msg, body)
@@ -321,8 +318,8 @@ func (s bindingService) createLocalWorkspace(id, name, cwd string) (*config.Work
 	if err := os.MkdirAll(absCWD, 0o755); err != nil {
 		return nil, err
 	}
-	s.app.configMu.Lock()
-	defer s.app.configMu.Unlock()
+	s.app.configMutex().Lock()
+	defer s.app.configMutex().Unlock()
 	if config.FindWorkspace(s.app.cfg, id) != nil {
 		return nil, fmt.Errorf("workspace %q 已存在", id)
 	}
@@ -428,7 +425,7 @@ func (s bindingService) renderBindingStatusCard(sessionKey string, binding *stat
 		"approval policy: " + renderOptionalBacktick(binding.ApprovalPolicyOverride),
 		"multi-agent: " + renderOptionalBacktick(binding.MultiAgentModeOverride),
 		"Claude permissions: " + renderOptionalBacktick(binding.ClaudePermissionMode),
-		"\n常用命令：`/workspace use WORKSPACE_ID`、`/workspace new WORKSPACE_ID CWD`、`/workspace new worktree [BRANCH] [ID]`、`/workspace clone GIT_URL [WORKSPACE_ID] [--parent DIR]`、`/primary on`、`/model set MODEL|default`、`/model effort EFFORT|default`。",
+		"\n常用命令：`/workspace use WORKSPACE_ID`、`/workspace new WORKSPACE_ID CWD`、`/workspace new worktree [BRANCH] [ID]`、`/workspace clone GIT_URL [WORKSPACE_ID] [--parent DIR]`、`@Bot /primary on`、`/model set MODEL|default`、`/model effort EFFORT|default`。",
 	}
 	if len(binding.PendingMessages) > 0 {
 		preview := pendingBindingMessagePreview(binding.PendingMessages[0])
@@ -583,4 +580,4 @@ func renderOptionalBacktick(value string) string {
 	return "`" + value + "`"
 }
 
-const currentBotCommandUsage = "/workspace | /workspace use WORKSPACE_ID | /workspace new WORKSPACE_ID CWD | /workspace new worktree [BRANCH] [ID] | /workspace clone GIT_URL [WORKSPACE_ID] [--parent DIR] | /primary on | /model set MODEL|default | /model effort EFFORT|default | /fast fast|default|off | /workspace sandbox MODE|default | /workspace policy POLICY|default | /workspace multiagent MODE|default | /workspace permissions MODE|default"
+const currentBotCommandUsage = "/workspace | /workspace use WORKSPACE_ID | /workspace new WORKSPACE_ID CWD | /workspace new worktree [BRANCH] [ID] | /workspace clone GIT_URL [WORKSPACE_ID] [--parent DIR] | @Bot /primary on | /model set MODEL|default | /model effort EFFORT|default | /fast fast|default|off | /workspace sandbox MODE|default | /workspace policy POLICY|default | /workspace multiagent MODE|default | /workspace permissions MODE|default"

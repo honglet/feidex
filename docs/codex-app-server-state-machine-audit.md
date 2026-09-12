@@ -1,6 +1,6 @@
 # Codex App Server 状态机审计
 
-审计时间: 2026-09-10
+审计时间: 2026-09-11
 
 官方来源:
 - `https://developers.openai.com/codex/app-server`
@@ -95,7 +95,7 @@
 | `SM-03` | `thread/start` 后 thread 元数据与本地 session 绑定不乱 | `internal/codexrpc/integration_live_test.go`、`internal/app/critical_paths_test.go`、`internal/app/critical_paths_more_test.go` |
 | `SM-04` | `turn/start`、`turn/started`、`turn/completed` 与队列恢复不乱序 | `internal/app/critical_paths_test.go`、`internal/app/critical_paths_more_test.go`、`internal/app/protocol_business_logic_test.go`、`internal/app/codex_turn_recovery_test.go`、`internal/app/quiet_working_card_test.go`、`internal/codexrpc/integration_live_state_machine_test.go` |
 | `SM-05` | `turn/steer` 必须绑定 `expectedTurnId`，reply follow-up 不能误开新 turn | `internal/app/app_more_test.go`、`internal/app/steer_more_test.go`、`internal/codexrpc/integration_live_state_machine_test.go` |
-| `SM-06` | `turn/interrupt` 只请求中断，真正收口仍等 `turn/completed(interrupted)` | `internal/app/state_machine_contracts_test.go`、`internal/app/notifications_branches_more_test.go` |
+| `SM-06` | `turn/interrupt` 只请求中断，真正收口仍等 `turn/completed(interrupted)` | `internal/app/state_machine_contracts_test.go`、`internal/app/notifications_branches_more_test.go`、`internal/app/auto_retry_test.go` |
 | `SM-07` | `error` 只记录失败上下文，不得早于 `turn/completed(failed)` 清 session | `internal/app/state_machine_contracts_test.go`、`internal/app/app_more_test.go` |
 | `SM-08` | compact 走 `contextCompaction` item 生命周期，不退回 deprecated 路径 | `internal/app/compact_more_test.go`、`internal/app/notifications_branches_more_test.go` |
 | `SM-09` | command approval 必须等待 `serverRequest/resolved` 才恢复 submission | `internal/app/critical_paths_test.go`、`internal/app/item_started_server_request_test.go`、`internal/app/protocol_business_logic_test.go`、`internal/app/quiet_working_card_test.go`、`internal/codexrpc/integration_live_state_machine_test.go` |
@@ -234,6 +234,8 @@
 - 我们当前实现:
   - `internal/app/threadmenu/service.go` / `internal/app/backend/actions.go` 发送 `turn/interrupt` 或 backend-specific interrupt。
   - `internal/app/turn_lifecycle.go` 在 `turn/completed` 时把 `interrupted` 作为最终状态写回。
+  - `/stop` 先取消同 frontend/chat 会话的自动重试和排队输入，再请求中断；停止与 retry timer 启动按 session 互斥。只有本地等待重试时，无需发送 `turn/interrupt`。
+  - 中断失败时（例如服务端已返回 `no active turn to interrupt`），允许通过 `thread/read(includeTurns=true)` 查询指定 turn；只有确认 `completed|failed|interrupted` 才沿用 `finishTurn` 收口，不把错误文本或 interrupt response 视为终态。此恢复路径不要求曾看到 final output。
 - 差异点:
   - 无。
 - 修改建议:
@@ -251,6 +253,7 @@
 - 我们当前实现:
   - `internal/app/codex_event_router.go` 记录 `error`。
   - `internal/app/turn_lifecycle.go` 最终仍在 `turn/completed` 处 finalize。
+  - `/stop` 标记取消的 auto-retry 在迟到的 `failed` 终态到达时只清理，不得重新置为未取消或创建新定时器；已派发的旧 timer callback 也不能启动后来的新重试循环。
 - 差异点:
   - 无。
 - 修改建议:
