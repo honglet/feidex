@@ -207,6 +207,22 @@ func appendFeatureBindingsThreadWorkspace(bindings map[string]featureBinding) {
 						effort = ""
 					}
 					return completeBotProfileEffortSet(s.app, action, effort)
+				case "model.plan_config.set_model":
+					return newModelConfigService(s.app).completeBotWorkspacePlanModelSet(action, actionStringValue(action, "model_id"))
+				case "model.plan_config.select_model":
+					modelID := strings.TrimSpace(action.Option)
+					if modelID == modelConfigDefaultOptionValue {
+						modelID = ""
+					}
+					return newModelConfigService(s.app).completeBotWorkspacePlanModelSet(action, modelID)
+				case "model.plan_config.set_effort":
+					return newModelConfigService(s.app).completeBotWorkspacePlanReasoningEffortSet(action, actionStringValue(action, "reasoning_effort"))
+				case "model.plan_config.select_effort":
+					effort := strings.TrimSpace(action.Option)
+					if effort == modelConfigDefaultOptionValue {
+						effort = ""
+					}
+					return newModelConfigService(s.app).completeBotWorkspacePlanReasoningEffortSet(action, effort)
 				}
 			}
 			switch actionName {

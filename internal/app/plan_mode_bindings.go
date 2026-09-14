@@ -38,7 +38,17 @@ func renderPlanModeStatusText(mode *state.SessionCollaborationMode) string {
 }
 
 func resolvePlanModeForActiveThread(a *App) (*state.SessionCollaborationMode, error) {
-	return planmode.ResolvePlanModeForActiveThread(newPlanModeAppAdapter(a))
+	var sess *state.Session
+	if a != nil {
+		// Legacy callers do not carry a session; retain the previous fallback.
+		for _, candidate := range a.State().Sessions() {
+			if candidate != nil && strings.TrimSpace(candidate.ActiveThreadID) != "" {
+				sess = candidate
+				break
+			}
+		}
+	}
+	return planmode.ResolvePlanModeForActiveThread(newPlanModeAppAdapter(a), sess)
 }
 
 func planModeForSession(a *App, sessionKey string) *state.SessionCollaborationMode {

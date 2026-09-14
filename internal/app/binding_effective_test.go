@@ -107,3 +107,23 @@ func TestP2PSessionScopeActiveForUnmaterializedCanonicalChat(t *testing.T) {
 		t.Fatal("expected an unmaterialized chat card to be treated as private scope")
 	}
 }
+
+func TestEffectiveCodexPlanSettingsUsesWorkspaceOverrides(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.frontendID = "bot-a"
+	a.frontendPlanModel = "frontend-plan"
+	a.frontendPlanReasoningEffort = "medium"
+	a.cfg.Codex.PlanModel = "global-plan"
+	a.cfg.Codex.PlanReasoningEffort = "low"
+	if err := a.SaveBotWorkspaceSettings(&state.BotWorkspaceSettings{
+		WorkspaceID:         "default",
+		PlanModel:           "workspace-plan",
+		PlanReasoningEffort: "high",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	model, effort := a.EffectiveCodexPlanSettings(&state.Session{WorkspaceID: "default"})
+	if model != "workspace-plan" || effort != "high" {
+		t.Fatalf("plan settings = %q/%q, want workspace-plan/high", model, effort)
+	}
+}

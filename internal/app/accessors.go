@@ -108,6 +108,56 @@ func (a *App) FrontendModel() string {
 	return strings.TrimSpace(a.frontendModel)
 }
 
+// EffectiveCodexModelSettings returns the model/effort used by the current
+// Codex conversation, including the bot/workspace settings persisted for the
+// session's workspace.
+func (a *App) EffectiveCodexModelSettings(sess *state.Session) (string, string) {
+	if a == nil {
+		return "", ""
+	}
+	model := effectiveCodexModel(a, sess, config.FindWorkspace(a.cfg, func() string {
+		if sess != nil {
+			return strings.TrimSpace(sess.WorkspaceID)
+		}
+		return ""
+	}()))
+	effort := effectiveCodexReasoningEffort(a, sess)
+	return model, effort
+}
+
+// EffectiveCodexPlanSettings returns the Plan model/effort for a session.
+// Workspace-specific Plan settings override frontend/global configuration;
+// the workspace's normal model is used when no explicit Plan model exists.
+func (a *App) EffectiveCodexPlanSettings(sess *state.Session) (string, string) {
+	if a == nil {
+		return "", ""
+	}
+	model, effort := "", ""
+	if cfg := a.EffectiveCodexConfig(); cfg != nil {
+		model = strings.TrimSpace(cfg.Codex.PlanModel)
+		effort = strings.TrimSpace(cfg.Codex.PlanReasoningEffort)
+	}
+	if sess != nil {
+		if settings := a.BotWorkspaceSettings(sess.WorkspaceID); settings != nil {
+			if strings.TrimSpace(settings.PlanModel) != "" {
+				model = strings.TrimSpace(settings.PlanModel)
+			} else if strings.TrimSpace(settings.Model) != "" {
+				model = strings.TrimSpace(settings.Model)
+			}
+			if strings.TrimSpace(settings.PlanReasoningEffort) != "" {
+				effort = strings.TrimSpace(settings.PlanReasoningEffort)
+			}
+		}
+	}
+	if model == "" {
+		model = a.FrontendDefaultModel()
+	}
+	if effort == "" {
+		effort = effectiveCodexReasoningEffort(a, sess)
+	}
+	return model, effort
+}
+
 // Store returns the state store.
 func (a *App) Store() *state.Store {
 	if a == nil {
