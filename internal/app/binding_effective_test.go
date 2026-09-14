@@ -98,3 +98,12 @@ func TestEffectiveClaudeModelUsesFrontendModelBeforeGlobalClaudeModel(t *testing
 		t.Fatalf("effective Claude model = %q, want frontend model", got)
 	}
 }
+
+func TestP2PSessionScopeActiveForUnmaterializedCanonicalChat(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.frontendID = "bot-a"
+	key := "feishu:frontend:bot-a:chat:private-chat"
+	if !p2pSessionScopeActive(a, key) {
+		t.Fatal("expected an unmaterialized chat card to be treated as private scope")
+	}
+}

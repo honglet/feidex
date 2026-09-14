@@ -71,7 +71,18 @@ func groupBindingSessionScopeActive(a *App, sessionKey string) bool {
 
 func p2pSessionScopeActive(a *App, sessionKey string) bool {
 	chatType, chatID := sessionKeyChatForApp(a, sessionKey)
-	return strings.TrimSpace(chatID) != "" && strings.EqualFold(strings.TrimSpace(chatType), "p2p")
+	if strings.TrimSpace(chatID) == "" {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(chatType), "p2p") {
+		return true
+	}
+	// Canonical session keys intentionally collapse p2p and group chats to a
+	// frontend/chat identity. If no persisted session exists yet, a model card
+	// opened from a private chat has no chat-type marker to recover. Group cards
+	// are recognized first through their binding/primary state, so this fallback
+	// safely treats an otherwise unclassified chat card as p2p.
+	return strings.TrimSpace(chatType) == ""
 }
 
 func threadMenuEffectiveSessionKey(a *App, sessionKey string) string {

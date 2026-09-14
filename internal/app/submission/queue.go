@@ -462,10 +462,17 @@ func effectiveCodexModel(a App, sess *state.Session, sub *state.Submission, ws *
 	)
 }
 
-func effectiveCodexReasoningEffort(a App, sess *state.Session, sub *state.Submission, _ *config.Workspace) string {
+func effectiveCodexReasoningEffort(a App, sess *state.Session, sub *state.Submission, ws *config.Workspace) string {
 	binding := submissionBinding(a, sess, sub)
+	workspaceEffort := ""
+	if provider, ok := a.(botWorkspaceSettingsResolver); ok && ws != nil {
+		if settings := provider.SubmissionQueueBotWorkspaceSettings(ws.ID); settings != nil {
+			workspaceEffort = strings.TrimSpace(settings.ReasoningEffort)
+		}
+	}
 	return firstNonEmpty(
 		bindingReasoningEffortOverride(binding),
+		workspaceEffort,
 		botProfileReasoningEffort(a),
 		configuredCodexReasoningEffort(a),
 	)

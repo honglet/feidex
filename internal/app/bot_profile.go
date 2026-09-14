@@ -167,17 +167,28 @@ func commandEffortProfileAware(a *App, msg *feishu.InboundMessage, args []string
 		return newModelConfigService(a).commandEffort(msg, args)
 	}
 	if len(args) == 1 {
-		if err := newModelConfigService(a).commandEffort(msg, args); err != nil {
-			// commandEffort validates the value and renders the standard response;
-			// persistence below is scoped to the selected workspace for Codex.
-			return err
-		}
 		value := clearableArg(args[0])
-		_, err := updateBotProfile(a, func(profile *state.BotProfile) { profile.ReasoningEffort = value })
-		if err != nil {
-			return err
+		if configuredBackend(a) != config.RuntimeBackendClaude {
+			_, sess, ws := currentWorkspaceForMessage(a, msg)
+			workspaceID := ""
+			if ws != nil {
+				workspaceID = ws.ID
+			} else if sess != nil {
+				workspaceID = strings.TrimSpace(sess.WorkspaceID)
+			}
+			if workspaceID != "" {
+				settings := a.BotWorkspaceSettings(workspaceID)
+				if settings == nil {
+					settings = &state.BotWorkspaceSettings{WorkspaceID: workspaceID}
+				}
+				settings.ReasoningEffort = value
+				if err := a.SaveBotWorkspaceSettings(settings); err != nil {
+					return err
+				}
+				return a.feishu.ReplyText(context.Background(), msg.MessageID, "已更新当前 Bot 在该 workspace 的推理强度: "+renderOptionalBacktick(value), replyInThreadEnabled(a, msg.ChatType))
+			}
 		}
-		return nil
+		return newModelConfigService(a).commandEffort(msg, args)
 	}
 	return fmt.Errorf("usage: /effort | /effort EFFORT|default")
 }
@@ -242,11 +253,8 @@ func completeBotProfileModelSet(a *App, action *feishu.CardAction, modelID strin
 			}
 		}
 		sessionKey := actionSessionKey(action)
-		sess := a.State().Session(sessionKey)
-		var ws *config.Workspace
-		if sess != nil {
-			ws = config.FindWorkspace(a.cfg, sess.WorkspaceID)
-		}
+		msg := commandMessageFromAction(a, action, sessionKey, "/model")
+		_, sess, ws := currentWorkspaceForMessage(a, msg)
 		if ws != nil {
 			settings := a.BotWorkspaceSettings(ws.ID)
 			if settings == nil {
@@ -303,11 +311,34 @@ func renderBotWorkspaceModelResponse(a *App, action *feishu.CardAction, sessionK
 }
 
 func completeBotProfileEffortSet(a *App, action *feishu.CardAction, effort string) (*callback.CardActionTriggerResponse, error) {
+	value := clearableArg(effort)
+	if configuredBackend(a) != config.RuntimeBackendClaude {
+		sessionKey := actionSessionKey(action)
+		msg := commandMessageFromAction(a, action, sessionKey, "/effort")
+		_, sess, ws := currentWorkspaceForMessage(a, msg)
+		workspaceID := ""
+		if ws != nil {
+			workspaceID = ws.ID
+		} else if sess != nil {
+			workspaceID = strings.TrimSpace(sess.WorkspaceID)
+		}
+		if workspaceID != "" {
+			settings := a.BotWorkspaceSettings(workspaceID)
+			if settings == nil {
+				settings = &state.BotWorkspaceSettings{WorkspaceID: workspaceID}
+			}
+			settings.ReasoningEffort = value
+			if err := a.SaveBotWorkspaceSettings(settings); err != nil {
+				return nil, err
+			}
+			return &callback.CardActionTriggerResponse{Toast: &callback.Toast{Type: "success", Content: "已更新当前 Bot 在该 workspace 的推理强度"}}, nil
+		}
+	}
 	resp, err := newBackendConfigurationService(a).completeGlobalReasoningEffortSet(action, effort)
 	if err != nil || resp == nil || (resp.Toast != nil && strings.EqualFold(resp.Toast.Type, "error")) {
 		return resp, err
 	}
-	_, err = updateBotProfile(a, func(profile *state.BotProfile) { profile.ReasoningEffort = clearableArg(effort) })
+	_, err = updateBotProfile(a, func(profile *state.BotProfile) { profile.ReasoningEffort = value })
 	return resp, err
 }
 
