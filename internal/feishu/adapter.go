@@ -498,6 +498,9 @@ func (a *Adapter) handleCardActionEvent(ctx context.Context, event *callback.Car
 		"user_id", cardAction.UserID,
 		"action_value", fmt.Sprintf("%v", cardAction.ActionValue),
 		"form_value", fmt.Sprintf("%v", cardAction.FormValue),
+		"option", cardAction.Option,
+		"input_value", cardAction.InputValue,
+		"options", fmt.Sprintf("%v", cardAction.Options),
 	)
 	return a.onCardAction(cardAction)
 }

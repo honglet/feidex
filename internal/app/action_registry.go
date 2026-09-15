@@ -111,6 +111,38 @@ func actionStringValue(action *feishu.CardAction, key string) string {
 	return strings.TrimSpace(value)
 }
 
+// actionSelectedValue returns the value selected by a card input. Feishu has
+// used both option and input_value for select_static callbacks, while form
+// submissions place the value in form_value. Accept all representations so
+// model/effort pickers do not silently clear or retain the previous setting.
+func actionSelectedValue(action *feishu.CardAction, formKeys ...string) string {
+	if action == nil {
+		return ""
+	}
+	for _, key := range formKeys {
+		if value, ok := action.FormValue[key]; ok {
+			if text := strings.TrimSpace(fmt.Sprint(value)); text != "" {
+				return text
+			}
+		}
+		if value := actionStringValue(action, key); value != "" {
+			return value
+		}
+	}
+	if value := strings.TrimSpace(action.Option); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(action.InputValue); value != "" {
+		return value
+	}
+	for _, value := range action.Options {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func actionIntValue(action *feishu.CardAction, key string) int {
 	if action == nil {
 		return 0

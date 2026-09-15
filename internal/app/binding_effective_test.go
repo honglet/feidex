@@ -1,11 +1,43 @@
 package app
 
 import (
+	"context"
 	"testing"
 
+	"feidex/internal/codexrpc"
 	"feidex/internal/config"
+	"feidex/internal/feishu"
 	"feidex/internal/state"
 )
+
+func TestPrivateEffortCardAcceptsInputValueAndPersistsWorkspaceSetting(t *testing.T) {
+	a, _, fc := newTestApp(t)
+	a.frontendID = "xiaolongnv"
+	workspaceID := a.cfg.Workspaces[0].ID
+	sessionKey := "feishu:frontend:xiaolongnv:chat:private-effort"
+	if err := a.State().SaveSession(&state.Session{Key: sessionKey, WorkspaceID: workspaceID, ChatID: "private-effort", ChatType: "p2p", OwnerUserID: "user-1"}); err != nil {
+		t.Fatalf("SaveSession() error = %v", err)
+	}
+	fc.callHook = func(_ context.Context, method string, _ any, out any) error {
+		if method == "model/list" {
+			*out.(*codexrpc.ModelListResult) = codexrpc.ModelListResult{Data: []codexrpc.ModelListEntry{{ID: "model-a", IsDefault: true, SupportedReasoningEfforts: []codexrpc.ModelReasoningEffortEntry{{ReasoningEffort: "low"}, {ReasoningEffort: "high"}}}}}
+		}
+		return nil
+	}
+	_, err := newCardActionService(a).dispatch(&feishu.CardAction{
+		ActionValue: map[string]any{"action": "model.config.select_effort", "session_key": sessionKey},
+		InputValue:  "low",
+		UserID:      "user-1",
+		ChatID:      "private-effort",
+	})
+	if err != nil {
+		t.Fatalf("dispatch() error = %v", err)
+	}
+	settings := a.BotWorkspaceSettings(workspaceID)
+	if settings == nil || settings.ReasoningEffort != "low" {
+		t.Fatalf("workspace reasoning effort = %#v, want low", settings)
+	}
+}
 
 func TestEffectiveModelUsesSessionBindingThenBotDefault(t *testing.T) {
 	a, _, _ := newTestApp(t)

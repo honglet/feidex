@@ -172,7 +172,7 @@ func appendFeatureBindingsThreadWorkspace(bindings map[string]featureBinding) {
 				case "model.config.set_model":
 					return svc.completeBindingModelSet(action, sessionKey, actionStringValue(action, "model_id"))
 				case "model.config.select_model":
-					modelID := strings.TrimSpace(action.Option)
+					modelID := actionSelectedValue(action, "model_id")
 					if modelID == modelConfigDefaultOptionValue {
 						modelID = ""
 					}
@@ -180,7 +180,7 @@ func appendFeatureBindingsThreadWorkspace(bindings map[string]featureBinding) {
 				case "model.config.set_effort":
 					return svc.completeBindingEffortSet(action, sessionKey, actionStringValue(action, "reasoning_effort"))
 				case "model.config.select_effort":
-					reasoningEffort := strings.TrimSpace(action.Option)
+					reasoningEffort := actionSelectedValue(action, "reasoning_effort")
 					if reasoningEffort == modelConfigDefaultOptionValue {
 						reasoningEffort = ""
 					}
@@ -194,7 +194,7 @@ func appendFeatureBindingsThreadWorkspace(bindings map[string]featureBinding) {
 				case "model.config.set_model":
 					return completeBotProfileModelSet(s.app, action, actionStringValue(action, "model_id"))
 				case "model.config.select_model":
-					modelID := strings.TrimSpace(action.Option)
+					modelID := actionSelectedValue(action, "model_id")
 					if modelID == modelConfigDefaultOptionValue {
 						modelID = ""
 					}
@@ -202,7 +202,7 @@ func appendFeatureBindingsThreadWorkspace(bindings map[string]featureBinding) {
 				case "model.config.set_effort":
 					return completeBotProfileEffortSet(s.app, action, actionStringValue(action, "reasoning_effort"))
 				case "model.config.select_effort":
-					effort := strings.TrimSpace(action.Option)
+					effort := actionSelectedValue(action, "reasoning_effort")
 					if effort == modelConfigDefaultOptionValue {
 						effort = ""
 					}
@@ -210,7 +210,7 @@ func appendFeatureBindingsThreadWorkspace(bindings map[string]featureBinding) {
 				case "model.plan_config.set_model":
 					return newModelConfigService(s.app).completeBotWorkspacePlanModelSet(action, actionStringValue(action, "model_id"))
 				case "model.plan_config.select_model":
-					modelID := strings.TrimSpace(action.Option)
+					modelID := actionSelectedValue(action, "model_id")
 					if modelID == modelConfigDefaultOptionValue {
 						modelID = ""
 					}
@@ -218,7 +218,7 @@ func appendFeatureBindingsThreadWorkspace(bindings map[string]featureBinding) {
 				case "model.plan_config.set_effort":
 					return newModelConfigService(s.app).completeBotWorkspacePlanReasoningEffortSet(action, actionStringValue(action, "reasoning_effort"))
 				case "model.plan_config.select_effort":
-					effort := strings.TrimSpace(action.Option)
+					effort := actionSelectedValue(action, "reasoning_effort")
 					if effort == modelConfigDefaultOptionValue {
 						effort = ""
 					}
@@ -231,7 +231,7 @@ func appendFeatureBindingsThreadWorkspace(bindings map[string]featureBinding) {
 			case "model.config.set_model":
 				return newBackendConfigurationService(s.app).completeGlobalModelSet(action, actionStringValue(action, "model_id"))
 			case "model.config.select_model":
-				modelID := strings.TrimSpace(action.Option)
+				modelID := actionSelectedValue(action, "model_id")
 				if modelID == modelConfigDefaultOptionValue {
 					modelID = ""
 				}
@@ -243,7 +243,7 @@ func appendFeatureBindingsThreadWorkspace(bindings map[string]featureBinding) {
 			case "model.config.set_effort":
 				return newBackendConfigurationService(s.app).completeGlobalReasoningEffortSet(action, actionStringValue(action, "reasoning_effort"))
 			case "model.config.select_effort":
-				reasoningEffort := strings.TrimSpace(action.Option)
+				reasoningEffort := actionSelectedValue(action, "reasoning_effort")
 				if reasoningEffort == modelConfigDefaultOptionValue {
 					reasoningEffort = ""
 				}
@@ -251,7 +251,7 @@ func appendFeatureBindingsThreadWorkspace(bindings map[string]featureBinding) {
 			case "model.plan_config.set_model":
 				return newModelConfigService(s.app).completeCodexPlanModelSet(action, actionStringValue(action, "model_id"))
 			case "model.plan_config.select_model":
-				modelID := strings.TrimSpace(action.Option)
+				modelID := actionSelectedValue(action, "model_id")
 				if modelID == modelConfigDefaultOptionValue {
 					modelID = ""
 				}
@@ -259,7 +259,7 @@ func appendFeatureBindingsThreadWorkspace(bindings map[string]featureBinding) {
 			case "model.plan_config.set_effort":
 				return newModelConfigService(s.app).completeCodexPlanReasoningEffortSet(action, actionStringValue(action, "reasoning_effort"))
 			case "model.plan_config.select_effort":
-				reasoningEffort := strings.TrimSpace(action.Option)
+				reasoningEffort := actionSelectedValue(action, "reasoning_effort")
 				if reasoningEffort == modelConfigDefaultOptionValue {
 					reasoningEffort = ""
 				}
